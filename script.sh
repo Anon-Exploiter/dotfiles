@@ -37,7 +37,7 @@ apt_update_upgrade(){
 
 install_packages(){
   log_info "install_packages: start"
-  PACKAGES=(build-essential git curl wget vim tmux htop jq unzip zip apt-transport-https ca-certificates gnupg python3 python3-pip python3-venv python3-dev python-is-python3 python3-virtualenv nmap net-tools tcpdump aircrack-ng hashcat john hydra sqlmap nikto metasploit-framework burpsuite docker.io docker-compose openvpn wireshark remmina remmina-common remmina-dev gdebi)
+  PACKAGES=(build-essential git curl wget vim tmux htop jq unzip zip apt-transport-https ca-certificates gnupg python3 python3-pip python3-venv python3-dev python-is-python3 python3-virtualenv nmap net-tools tcpdump aircrack-ng hashcat john hydra sqlmap nikto metasploit-framework burpsuite docker.io docker-compose openvpn wireshark remmina remmina-common remmina-dev gdebi kali-wallpapers-2024)
   apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update failed"
   if apt-get install -y "${PACKAGES[@]}" >/dev/null 2>&1; then
     log_info "install_packages: packages installed"
