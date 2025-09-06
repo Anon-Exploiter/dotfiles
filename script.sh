@@ -28,23 +28,23 @@ early_install_vmtools(){ apt-get update -y >/dev/null 2>&1 || true; apt-get inst
 apt_update_upgrade(){
   log_info "apt: update & upgrade"
   export DEBIAN_FRONTEND=noninteractive
-  apt-get update -y >/dev/null 2>&1 || log_warn "apt update failed"
-  apt-get -y upgrade >/dev/null 2>&1 || { log_warn "apt upgrade failed; attempting recovery"; attempt_fix_broken_with_force_overwrite >/dev/null 2>&1 || log_warn "fix-broken failed"; }
-  apt-get -y autoremove >/dev/null 2>&1 || true
-  apt-get -y autoclean >/dev/null 2>&1 || true
+  apt-get update -y || log_warn "apt update failed"
+  apt-get -y upgrade || { log_warn "apt upgrade failed; attempting recovery"; attempt_fix_broken_with_force_overwrite || log_warn "fix-broken failed"; }
+  apt-get -y autoremove || true
+  apt-get -y autoclean || true
   log_info "apt: done"
 }
 
 install_packages(){
   log_info "install_packages: start"
-  PACKAGES=(build-essential git curl wget vim tmux htop jq unzip zip apt-transport-https ca-certificates gnupg python3 python3-pip python3-venv python3-dev python-is-python3 python3-virtualenv nmap net-tools tcpdump aircrack-ng hashcat john hydra sqlmap nikto metasploit-framework burpsuite docker.io docker-compose openvpn wireshark remmina remmina-common remmina-dev gdebi kali-wallpapers-2024)
-  apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update failed"
-  if apt-get install -y "${PACKAGES[@]}" >/dev/null 2>&1; then
+  PACKAGES=(build-essential git curl wget vim tmux htop jq unzip zip apt-transport-https ca-certificates gnupg python3 python3-pip python3-venv python3-dev python-is-python3 python3-virtualenv nmap net-tools tcpdump aircrack-ng hashcat john hydra sqlmap impacket-scripts nikto metasploit-framework burpsuite docker.io docker-compose openvpn wireshark remmina remmina-common remmina-dev gdebi)
+  apt-get update || log_warn "apt-get update failed"
+  if apt-get install -y "${PACKAGES[@]}"; then
     log_info "install_packages: packages installed"
   else
     log_warn "install_packages: initial install failed; attempting recovery"
-    attempt_fix_broken_with_force_overwrite >/dev/null 2>&1 || log_warn "attempt_fix_broken failed"
-    if apt-get install -y "${PACKAGES[@]}" >/dev/null 2>&1; then
+    attempt_fix_broken_with_force_overwrite || log_warn "attempt_fix_broken failed"
+    if apt-get install -y "${PACKAGES[@]}"; then
       log_info "install_packages: packages installed on retry"
     else
       log_warn "install_packages: install still failed after retry"
@@ -103,91 +103,260 @@ install_ubuntu_mono_and_set_xfce_font(){
 # -----------------------
 # Sublime helpers
 # -----------------------
-install_sublime_text(){
-  log_info "install_sublime_text: best-effort add repo"
+setup_sublime(){
+  log_info "setup_sublime: start"
+  TARGET_USER="${TARGET_USER:-$(logname 2>/dev/null || echo "${SUDO_USER:-$USER}")}"
+  USER_HOME="${USER_HOME:-$(eval echo ~${TARGET_USER})}"
+
+  # add repo/key + install
   mkdir -p /etc/apt/keyrings >/dev/null 2>&1 || true
-  if command -v curl >/dev/null 2>&1; then curl -fsSL https://download.sublimetext.com/sublimehq-pub.gpg | tee /etc/apt/keyrings/sublimehq-pub.asc >/dev/null 2>&1; fi
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL https://download.sublimetext.com/sublimehq-pub.gpg | tee /etc/apt/keyrings/sublimehq-pub.asc >/dev/null 2>&1 || log_warn "sublime gpg fetch failed"
+  fi
   printf 'Types: deb\nURIs: https://download.sublimetext.com/\nSuites: apt/stable/\nSigned-By: /etc/apt/keyrings/sublimehq-pub.asc\n' > /etc/apt/sources.list.d/sublime-text.sources 2>/dev/null || true
   apt-get update -y >/dev/null 2>&1 || true
-  apt-get install -y sublime-text >/dev/null 2>&1 || true
-  log_info "install_sublime_text: done"
-}
+  apt-get install -y sublime-text >/dev/null 2>&1 || log_warn "sublime install failed"
 
-install_package_control(){
-  log_info "install_package_control: start"
-  PUSER="${TARGET_USER}"; PHOME="$(eval echo ~${PUSER})"
-  DATA_DIR="${PHOME}/.config/sublime-text"; [ -d "${DATA_DIR}" ] || DATA_DIR="${PHOME}/.config/sublime-text-3"
+  # package control
+  DATA_DIR="${USER_HOME}/.config/sublime-text"
+  [ -d "${DATA_DIR}" ] || DATA_DIR="${USER_HOME}/.config/sublime-text-3"
   mkdir -p "${DATA_DIR}/Installed Packages" 2>/dev/null || true
   PC_URL="https://packagecontrol.io/Package%20Control.sublime-package"
   PC_TARGET="${DATA_DIR}/Installed Packages/Package Control.sublime-package"
-  if sudo -u "${PUSER}" test -f "${PC_TARGET}"; then log_info "Package Control present"; return 0; fi
-  if command -v curl >/dev/null 2>&1; then sudo -u "${PUSER}" bash -lc "curl -fsSL '${PC_URL}' -o '${PC_TARGET}'" >/dev/null 2>&1 || log_warn "packagecontrol download failed"
-  elif command -v wget >/dev/null 2>&1; then sudo -u "${PUSER}" bash -lc "wget -qO '${PC_TARGET}' '${PC_URL}'" >/dev/null 2>&1 || log_warn "packagecontrol download failed"
-  else log_warn "no downloader for packagecontrol"; fi
-  chown "${PUSER}:${PUSER}" "${PC_TARGET}" 2>/dev/null || true; chmod 0644 "${PC_TARGET}" 2>/dev/null || true
-  log_info "install_package_control: done"
-}
+  if sudo -u "${TARGET_USER}" test -f "${PC_TARGET}" >/dev/null 2>&1; then
+    log_info "Package Control present"
+  else
+    if command -v curl >/dev/null 2>&1; then
+      sudo -u "${TARGET_USER}" bash -lc "curl -fsSL '${PC_URL}' -o '${PC_TARGET}'" >/dev/null 2>&1 || log_warn "packagecontrol download failed"
+    elif command -v wget >/dev/null 2>&1; then
+      sudo -u "${TARGET_USER}" bash -lc "wget -qO '${PC_TARGET}' '${PC_URL}'" >/dev/null 2>&1 || log_warn "packagecontrol download failed"
+    else
+      log_warn "no downloader for packagecontrol"
+    fi
+    chown "${TARGET_USER}:${TARGET_USER}" "${PC_TARGET}" 2>/dev/null || true
+    chmod 0644 "${PC_TARGET}" 2>/dev/null || true
+  fi
 
-download_sublime_preferences(){
-  log_info "download_sublime_preferences: start"
-  DEST_DIR="${USER_HOME}/.config/sublime-text/Packages/User"
+  # preferences
+  DEST_DIR="${DATA_DIR}/Packages/User"
   DEST_FILE="${DEST_DIR}/Preferences.sublime-settings"
   SRC_URL="https://raw.githubusercontent.com/Anon-Exploiter/dotfiles/refs/heads/main/Preferences.sublime-settings"
-  mkdir -p "${DEST_DIR}"
+  mkdir -p "${DEST_DIR}" 2>/dev/null || true
   TMP="$(mktemp -p /tmp prefs.XXXXXX)" || TMP="/tmp/prefs.$$"
-  if command -v curl >/dev/null 2>&1; then curl -fsSL "${SRC_URL}" -o "${TMP}" || { rm -f "${TMP}"; log_warn "curl failed"; return 1; }
-  elif command -v wget >/dev/null 2>&1; then wget -qO "${TMP}" "${SRC_URL}" || { rm -f "${TMP}"; log_warn "wget failed"; return 1; }
-  else rm -f "${TMP}" || true; log_warn "no curl/wget"; return 1; fi
-  if [ -f "${DEST_FILE}" ] && cmp -s "${TMP}" "${DEST_FILE}"; then rm -f "${TMP}"; log_info "Sublime prefs identical; skip"; return 0; fi
-  mv -f "${TMP}" "${DEST_FILE}"; chown "${TARGET_USER}:${TARGET_USER}" "${DEST_FILE}" 2>/dev/null || true; chmod 0644 "${DEST_FILE}" 2>/dev/null || true
-  log_info "download_sublime_preferences: installed"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${SRC_URL}" -o "${TMP}" || { rm -f "${TMP}"; log_warn "curl failed"; TMP=""; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${TMP}" "${SRC_URL}" || { rm -f "${TMP}"; log_warn "wget failed"; TMP=""; }
+  else
+    log_warn "no curl/wget"
+    TMP=""
+  fi
+  if [ -n "${TMP}" ] && [ -f "${TMP}" ]; then
+    if [ -f "${DEST_FILE}" ] && cmp -s "${TMP}" "${DEST_FILE}"; then
+      rm -f "${TMP}"
+      log_info "Sublime prefs identical; skip"
+    else
+      mv -f "${TMP}" "${DEST_FILE}" && chown "${TARGET_USER}:${TARGET_USER}" "${DEST_FILE}" 2>/dev/null || true
+      chmod 0644 "${DEST_FILE}" 2>/dev/null || true
+      log_info "download_sublime_preferences: installed"
+    fi
+  fi
+
+  # materialize package
+  PKG_DIR="${DATA_DIR}/Installed Packages"
+  mkdir -p "${PKG_DIR}" 2>/dev/null || true
+  TMPD="$(mktemp -d 2>/dev/null || echo /tmp/materialize.$$)"
+  ZIPURL="https://github.com/zyphlar/Materialize/archive/refs/heads/master.zip"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${ZIPURL}" -o "${TMPD}/m.zip" >/dev/null 2>&1 || log_warn "materialize download failed"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${TMPD}/m.zip" "${ZIPURL}" >/dev/null 2>&1 || log_warn "materialize download failed"
+  else
+    log_warn "no downloader for materialize"
+  fi
+  (cd "${TMPD}" 2>/dev/null && unzip -q m.zip) 2>/dev/null || true
+  EX="$(find "${TMPD}" -maxdepth 1 -type d -name "*Materialize*" -print -quit || true)"
+  PACK="${TMPD}/pack"; mkdir -p "${PACK}"
+  [ -n "${EX}" ] && mv "${EX}/"* "${PACK}/" 2>/dev/null || true
+  (cd "${PACK}" 2>/dev/null && zip -r -q "${TMPD}/Materialize.sublime-package" .) 2>/dev/null || true
+  mv -f "${TMPD}/Materialize.sublime-package" "${PKG_DIR}/Materialize.sublime-package" 2>/dev/null || log_warn "move failed"
+  chown "${TARGET_USER}:${TARGET_USER}" "${PKG_DIR}/Materialize.sublime-package" 2>/dev/null || true
+  rm -rf "${TMPD}" 2>/dev/null || true
+
+  sudo chown $SUDO_USER:$SUDO_USER $DATA_DIR
+  sudo chmod 755 $DATA_DIR
+
+
+  log_info "setup_sublime: done"
 }
 
-install_materialize_sublime_package(){
-  log_info "install_materialize_sublime_package: start"
-  PUSER="${TARGET_USER}"; PHOME="$(eval echo ~${PUSER})"
-  PKG_DIR="${PHOME}/.config/sublime-text/Installed Packages"; mkdir -p "${PKG_DIR}"
-  TMPD="$(mktemp -d 2>/dev/null || echo /tmp/materialize.$$)"; ZIPURL="https://github.com/zyphlar/Materialize/archive/refs/heads/master.zip"
-  if command -v curl >/dev/null 2>&1; then curl -fsSL "${ZIPURL}" -o "${TMPD}/m.zip" >/dev/null 2>&1 || log_warn "materialize download failed"
-  elif command -v wget >/dev/null 2>&1; then wget -qO "${TMPD}/m.zip" "${ZIPURL}" >/dev/null 2>&1 || log_warn "materialize download failed"
-  else log_warn "no downloader"; rm -rf "${TMPD}" 2>/dev/null || true; return 1; fi
-  (cd "${TMPD}" && unzip -q m.zip) 2>/dev/null || true
-  EX="$(find "${TMPD}" -maxdepth 1 -type d -name "*Materialize*" -print -quit || true)"; PACK="${TMPD}/pack"; mkdir -p "${PACK}"
-  [ -n "${EX}" ] && mv "${EX}/"* "${PACK}/" 2>/dev/null || true
-  (cd "${PACK}" && zip -r -q "${TMPD}/Materialize.sublime-package" .) 2>/dev/null || true
-  mv -f "${TMPD}/Materialize.sublime-package" "${PKG_DIR}/Materialize.sublime-package" 2>/dev/null || log_warn "move failed"
-  chown "${PUSER}:${PUSER}" "${PKG_DIR}/Materialize.sublime-package" 2>/dev/null || true
-  rm -rf "${TMPD}" 2>/dev/null || true
-  log_info "install_materialize_sublime_package: done"
-}
 
 # -----------------------
 # XFCE power/compositing & system lid
 # -----------------------
+
+# helper: populate session env vars for the desktop user
+_get_desktop_session_info(){
+  RUN_AS="${SUDO_USER:-$(logname 2>/dev/null || echo $USER)}"
+  PID="$(pgrep -u "$RUN_AS" -n xfce4-panel 2>/dev/null || pgrep -u "$RUN_AS" -n xfce4-session 2>/dev/null || pgrep -u "$RUN_AS" -n dbus-daemon 2>/dev/null || true)"
+  DISPLAY_VAL=""; DBUS_ADDR=""; XDG_RUNTIME_DIR=""; XAUTH=""
+  if [ -n "$PID" ] && [ -r "/proc/$PID/environ" ]; then
+    env_blob="$(tr '\0' '\n' < /proc/$PID/environ 2>/dev/null || true)"
+    DISPLAY_VAL="$(printf "%s\n" "$env_blob" | awk -F= '/^DISPLAY=/{print substr($0, index($0,$2)); exit}')"
+    DBUS_ADDR="$(printf "%s\n" "$env_blob" | awk -F= '/^DBUS_SESSION_BUS_ADDRESS=/{print substr($0, index($0,$2)); exit}')"
+    XDG_RUNTIME_DIR="$(printf "%s\n" "$env_blob" | awk -F= '/^XDG_RUNTIME_DIR=/{print substr($0, index($0,$2)); exit}')"
+    XAUTH="$(printf "%s\n" "$env_blob" | awk -F= '/^XAUTHORITY=/{print substr($0, index($0,$2)); exit}')"
+  fi
+  [ -z "$DISPLAY_VAL" ] && DISPLAY_VAL=":0"
+  if [ -z "$XAUTH" ]; then
+    XAUTH="/home/$RUN_AS/.Xauthority"
+    [ ! -f "$XAUTH" ] && XAUTH=""
+  fi
+}
+
+# helper: run a command as desktop user with session env injected (fixed quoting)
+_run_as_desktop_user(){
+  # usage: _run_as_desktop_user "command string"
+  CMD="$1"
+  _get_desktop_session_info
+
+  # build export prefix safely by shell-escaping values
+  exports=""
+  [ -n "$DISPLAY_VAL" ] && exports+="export DISPLAY=$(printf '%q' "$DISPLAY_VAL"); "
+  [ -n "$DBUS_ADDR" ] && exports+="export DBUS_SESSION_BUS_ADDRESS=$(printf '%q' "$DBUS_ADDR"); "
+  [ -n "$XDG_RUNTIME_DIR" ] && exports+="export XDG_RUNTIME_DIR=$(printf '%q' "$XDG_RUNTIME_DIR"); "
+  [ -n "$XAUTH" ] && exports+="export XAUTHORITY=$(printf '%q' "$XAUTH"); "
+
+  full_cmd="${exports}${CMD}"
+
+  if [ "$(id -u)" -eq 0 ]; then
+    sudo -u "$RUN_AS" -H bash -lc "$full_cmd"
+  else
+    bash -lc "$full_cmd"
+  fi
+}
+
+# spread out xfce panel & show labels (uses _run_as_desktop_user)
+spread_xfce_panel(){
+  echo "spread_xfce_panel: start"
+  if ! _run_as_desktop_user 'command -v xfconf-query >/dev/null 2>&1'; then
+    echo "xfconf-query not available for desktop user; skipping"
+    return 0
+  fi
+
+  plugins_out="$(_run_as_desktop_user 'xfconf-query -c xfce4-panel -p /plugins -l -v' )" || { echo "cannot list panel plugins"; return 0; }
+  plugin_numbers="$(printf "%s" "$plugins_out" | grep -E "windowbuttons|tasklist" | awk '{print $1}' | cut -d "-" -f2 || true)"
+  if [ -z "$plugin_numbers" ]; then
+    echo "no windowbuttons/tasklist plugin found"
+    return 0
+  fi
+
+  for p in $plugin_numbers; do
+    grp_prop="/plugins/plugin-$p/grouping"
+    lbl_prop="/plugins/plugin-$p/show-labels"
+    echo "plugin-$p: set grouping=0"
+    _run_as_desktop_user "xfconf-query -c xfce4-panel -p '$grp_prop' >/dev/null 2>&1 && xfconf-query -c xfce4-panel -p '$grp_prop' -s 0 || xfconf-query -c xfce4-panel -p '$grp_prop' -n -t int -s 0" || echo "warning: could not set $grp_prop"
+    echo "plugin-$p: set show-labels=true"
+    _run_as_desktop_user "xfconf-query -c xfce4-panel -p '$lbl_prop' >/dev/null 2>&1 && xfconf-query -c xfce4-panel -p '$lbl_prop' -s true || xfconf-query -c xfce4-panel -p '$lbl_prop' -n -t bool -s true" || echo "warning: could not set $lbl_prop"
+  done
+  echo "spread_xfce_panel: done"
+}
+
+# update wallpaper - not working on fresh install - have to open the desktop UI once and set wallpaper - then this works lol
+update_wallpaper(){
+  echo "update_wallpaper: start"
+  apt-get -y update >/dev/null 2>&1
+  apt-get -y install kali-wallpapers-2024 >/dev/null 2>&1
+ 
+  IMG="/usr/share/backgrounds/kali/kali-metal-dark-16x9.png"
+  if [ ! -f "$IMG" ]; then
+    echo "image missing: $IMG"
+    return 0
+  fi
+
+  if ! _run_as_desktop_user 'command -v xfconf-query >/dev/null 2>&1'; then
+    echo "xfconf-query not available for desktop user; skipping wallpaper update"
+    return 0
+  fi
+
+  keys="$(_run_as_desktop_user 'xfconf-query -c xfce4-desktop -p /backdrop -l -R' | grep "last-image" || true)"
+  if [ -z "$keys" ]; then
+    echo "no wallpaper keys found"
+    return 0
+  fi
+
+  printf "%s\n" "$keys" | while IFS= read -r key; do
+    echo "setting wallpaper for key: $key"
+    _run_as_desktop_user "xfconf-query -c xfce4-desktop -p '$key' -s '$IMG'" || echo "xfconf-query failed for $key"
+  done
+
+  echo "update_wallpaper: done"
+}
+
+
 disable_xfce_compositing_fast(){
-  log_info "disable_xfce_compositing_fast: start"
-  if ! command -v xfconf-query >/dev/null 2>&1; then log_warn "xfconf-query missing"; return 0; fi
-  sudo -u "${TARGET_USER}" bash -lc '
-    if xfconf-query -c xfwm4 -p /general/use_compositing >/dev/null 2>&1; then cur="$(xfconf-query -c xfwm4 -p /general/use_compositing 2>/dev/null || echo)"; else cur=""; fi
-    if [ "$cur" = "false" ]; then echo "[INFO] compositing already disabled"; exit 0; fi
-    xfconf-query --channel=xfwm4 --property=/general/use_compositing --type=bool --set=false --create || exit 1
-  '
-  log_info "disable_xfce_compositing_fast: done"
+  echo "disable_xfce_compositing_fast: start"
+  # ensure xfconf available in desktop session
+  if ! _run_as_desktop_user 'command -v xfconf-query >/dev/null 2>&1'; then
+    echo "xfconf-query not available for desktop user; skipping compositing change"
+    return 0
+  fi
+
+  cur="$(_run_as_desktop_user 'xfconf-query -c xfwm4 -p /general/use_compositing' 2>/dev/null || true)"
+  if [ "$cur" = "false" ]; then
+    echo "compositing already disabled"
+    return 0
+  fi
+
+  echo "disabling compositing"
+  _run_as_desktop_user "xfconf-query --channel=xfwm4 --property=/general/use_compositing >/dev/null 2>&1 && xfconf-query --channel=xfwm4 --property=/general/use_compositing --type=bool --set=false || xfconf-query --channel=xfwm4 --property=/general/use_compositing --type=bool --create --set=false" || \
+    echo "warning: could not set /general/use_compositing"
+  echo "disable_xfce_compositing_fast: done"
 }
 
 install_xfce_power_manager_xml(){
-  log_info "install_xfce_power_manager_xml: start"
+  echo "install_xfce_power_manager_xml: start"
+  TARGET_USER="${TARGET_USER:-$(logname 2>/dev/null || echo $USER)}"
+  USER_HOME="$(eval echo ~${TARGET_USER})"
   SRC_URL="https://raw.githubusercontent.com/Anon-Exploiter/dotfiles/refs/heads/main/xfce4-power-manager.xml"
-  DEST_DIR="${USER_HOME}/.config/xfce4/xfconf/xfce-perchannel-xml"; DEST_FILE="${DEST_DIR}/xfce4-power-manager.xml"
-  mkdir -p "${DEST_DIR}"
+  DEST_DIR="${USER_HOME}/.config/xfce4/xfconf/xfce-perchannel-xml"
+  DEST_FILE="${DEST_DIR}/xfce4-power-manager.xml"
+
+  mkdir -p "${DEST_DIR}" || { echo "mkdir failed: ${DEST_DIR}"; return 1; }
   TMP="$(mktemp -p /tmp xfcepm.XXXXXX)" || TMP="/tmp/xfcepm.$$"
-  if command -v curl >/dev/null 2>&1; then curl -fsSL "${SRC_URL}" -o "${TMP}" || { rm -f "${TMP}"; log_warn "curl failed"; return 1; }
-  elif command -v wget >/dev/null 2>&1; then wget -qO "${TMP}" "${SRC_URL}" || { rm -f "${TMP}"; log_warn "wget failed"; return 1; }
-  else rm -f "${TMP}" || true; log_warn "no downloader"; return 1; fi
-  if [ -f "${DEST_FILE}" ] && cmp -s "${TMP}" "${DEST_FILE}"; then rm -f "${TMP}"; log_info "xfce power xml identical"; return 0; fi
-  mv -f "${TMP}" "${DEST_FILE}"; chown "${TARGET_USER}:${TARGET_USER}" "${DEST_FILE}" 2>/dev/null || true; chmod 0644 "${DEST_FILE}" 2>/dev/null || true
-  log_info "install_xfce_power_manager_xml: installed"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "${SRC_URL}" -o "${TMP}" || { rm -f "${TMP}"; echo "curl failed"; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "${TMP}" "${SRC_URL}" || { rm -f "${TMP}"; echo "wget failed"; return 1; }
+  else
+    rm -f "${TMP}" 2>/dev/null || true
+    echo "no downloader (curl/wget) available"
+    return 1
+  fi
+
+  if [ -f "${DEST_FILE}" ] && cmp -s "${TMP}" "${DEST_FILE}"; then
+    rm -f "${TMP}"
+    echo "xfce power xml identical; no change"
+    return 0
+  fi
+
+  mv -f "${TMP}" "${DEST_FILE}" || { echo "mv failed"; rm -f "${TMP}" 2>/dev/null || true; return 1; }
+  chown "${TARGET_USER}:${TARGET_USER}" "${DEST_FILE}" 2>/dev/null || true
+  chmod 0644 "${DEST_FILE}" 2>/dev/null || true
+  echo "installed xfce power manager xml -> ${DEST_FILE}"
+
+  # If xfconf-query is available in the desktop session, try to notify session (optional)
+  if _run_as_desktop_user 'command -v xfconf-query >/dev/null 2>&1'; then
+    echo "notifying xfce session about new power-manager config"
+    _run_as_desktop_user "xfconf-query -c xfce4-power-manager -p / -l >/dev/null 2>&1 || true" || true
+  fi
+
+  echo "install_xfce_power_manager_xml: done"
 }
+
+
+
 
 set_lid_switch_ignore(){
   log_info "set_lid_switch_ignore: start"
@@ -200,9 +369,13 @@ set_lid_switch_ignore(){
   log_info "set_lid_switch_ignore: done"
 }
 
+
+
+
 # -----------------------
 # zsh .zshrc updates (working PROMPT block)
 # -----------------------
+
 set_zsh_prompt_symbol_to_at(){
   log_info "set_zsh_prompt_symbol_to_at: start"
   TARGET_USER="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
@@ -223,22 +396,6 @@ set_zsh_prompt_symbol_to_at(){
   prev_prompt="$(sudo grep -E '^[[:space:]]*PROMPT[[:space:]]*=' "${ZSHRC}" | tail -n1 || true)"
   prev_alias_ll="$(sudo grep -E '^[[:space:]]*alias[[:space:]]+ll[[:space:]]*=' "${ZSHRC}" | tail -n1 || true)"
   prev_alias_cat="$(sudo grep -E '^[[:space:]]*alias[[:space:]]+cat[[:space:]]*=' "${ZSHRC}" | tail -n1 || true)"
-
-  if [ -n "${prev_histsize}" ] || [ -n "${prev_savehist}" ] || [ -n "${prev_prompt}" ] || [ -n "${prev_alias_ll}" ] || [ -n "${prev_alias_cat}" ]; then
-    {
-      echo "# zsh config backup - ${TIMESTAMP}"
-      [ -n "${prev_histsize}" ] && echo "HISTSIZE=${prev_histsize}"
-      [ -n "${prev_savehist}" ] && echo "SAVEHIST=${prev_savehist}"
-      [ -n "${prev_prompt}" ] && echo "PROMPT=${prev_prompt}"
-      [ -n "${prev_alias_ll}" ] && echo "ALIAS_LL=${prev_alias_ll}"
-      [ -n "${prev_alias_cat}" ] && echo "ALIAS_CAT=${prev_alias_cat}"
-    } | sudo tee "${HIST_BACKUP}" >/dev/null || log_warn "failed to write backup ${HIST_BACKUP}"
-    sudo chown "${TARGET_USER}:${TARGET_USER}" "${HIST_BACKUP}" >/dev/null 2>&1 || true
-    sudo chmod 0600 "${HIST_BACKUP}" >/dev/null 2>&1 || true
-    log_info "zsh values backed up to ${HIST_BACKUP}"
-  else
-    log_info "no existing HISTSIZE/SAVEHIST/PROMPT/alias ll/cat found to back up"
-  fi
 
   # Set HISTSIZE and SAVEHIST (overwrite or append)
   NEW_HISTSIZE="10000000"; NEW_SAVEHIST="200000000"
@@ -274,17 +431,6 @@ ZSH_PROMPT_EOF
   else
     sudo bash -lc "echo $'\\n# set by postinstall\\n${DESIRED_ALIAS_LL}' >> '${ZSHRC}'" || log_warn "failed to append alias ll"
   fi
-
-  # Ensure alias cat is set (replace or append) - fixed quoting
-  DESIRED_ALIAS_CAT="alias cat='bat -pp'"
-  if sudo grep -q -E '^[[:space:]]*alias[[:space:]]+cat[[:space:]]*=' "${ZSHRC}"; then
-    # use | as sed delimiter so single quotes in replacement are safe
-    sudo sed -i -E "s|^[[:space:]]*alias[[:space:]]+cat[[:space:]]*=.*|${DESIRED_ALIAS_CAT}|" "${ZSHRC}" || log_warn "failed to replace alias cat"
-  else
-    # append with proper escaping of single quotes
-    sudo bash -lc "printf '\n# set by postinstall\nalias cat='\''bat -pp'\''\n' >> '${ZSHRC}'" || log_warn "failed to append alias cat"
-  fi
-
 
   # Fix ownership/permissions
   sudo chown "${TARGET_USER}:${TARGET_USER}" "${ZSHRC}" >/dev/null 2>&1 || log_warn "chown failed on ${ZSHRC}"
@@ -347,8 +493,8 @@ setup_dirsearch() {
   T="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
   H="$(eval echo ~${T})"
   sudo -u "${T}" bash -lc "set -euo pipefail
-    mkdir -p \"${H}/tools\"
-    cd \"${H}/tools\"
+    mkdir -p \"${H}/tools/web\"
+    cd \"${H}/tools/web\"
     if [ -d dirsearch/.git ]; then
       cd dirsearch
       git pull --ff-only
@@ -404,38 +550,246 @@ install_bat_v0_25_via_gdebi() {
 
   rm -f "${TMP_DEB}" >/dev/null 2>&1 || true
   log_info "install_bat_v0_25_via_gdebi: done (check with 'bat --version' or 'batcat --version')"
+
+  # Ensure alias cat is set (replace or append) - fixed quoting
+  ZSHRC="${USER_HOME}/.zshrc"
+  DESIRED_ALIAS_CAT="alias cat='bat -pp'"
+  if sudo grep -q -E '^[[:space:]]*alias[[:space:]]+cat[[:space:]]*=' "${ZSHRC}"; then
+    # use | as sed delimiter so single quotes in replacement are safe
+    sudo sed -i -E "s|^[[:space:]]*alias[[:space:]]+cat[[:space:]]*=.*|${DESIRED_ALIAS_CAT}|" "${ZSHRC}" || log_warn "failed to replace alias cat"
+  else
+    # append with proper escaping of single quotes
+    sudo bash -lc "printf '\n# set by postinstall\nalias cat='\''bat -pp'\''\n' >> '${ZSHRC}'" || log_warn "failed to append alias cat"
+  fi
+
   return 0
 }
 
 
 
-# -----------------------
-# Main - call tasks in order
-# -----------------------
+clone_sliver_cheatsheet(){
+  log_info "clone_sliver_cheatsheet: start"
+  DEST="$HOME/tools"
+  REPO="https://github.com/Anon-Exploiter/sliver-cheatsheet.git"
+  NAME="sliver-cheatsheet"
+  command -v git >/dev/null 2>&1 || { echo "git missing"; return 1; }
+  mkdir -p "$DEST" || { echo "mkdir failed"; return 1; }
+  if [ -d "$DEST/$NAME/.git" ]; then
+    echo "repo exists, pulling"
+    git -C "$DEST/$NAME" pull --rebase --autostash >/dev/null 2>&1 || echo "git pull failed"
+  else
+    git -C "$DEST" clone "$REPO" >/dev/null 2>&1 || { echo "git clone failed"; return 1; }
+  fi
+  log_info "clone_sliver_cheatsheet: done"
+}
+
+
+install_frida_pipx_objection(){
+  log_info "installing frida-tools and objection via pipx"
+  pipx install frida-tools objection
+  pipx ensurepath
+  log_info "install_frida_pipx_objection: done"
+}
+
+setup_mobsf(){
+  echo "setup_mobsf: start"
+  IMAGE="opensecurity/mobile-security-framework-mobsf:latest"
+  USERNAME="${TARGET_USER:-${SUDO_USER:-$(logname || echo $USER)}}"
+  USERHOME="$(eval echo ~${USERNAME})"
+  DEST="$USERHOME/tools/mobile/mobsf-docker"
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "docker missing; install docker first"; return 1
+  fi
+  docker pull "$IMAGE" >/dev/null 2>&1
+  mkdir -p "$DEST"
+  sudo chown 9901:9901 "$DEST" || echo "sudo chown failed"
+  echo "To start mobsf -> http://localhost:8000"
+  echo 'sudo docker run -it --rm -p 8000:8000 -v /home/user/tools/mobile/mobsf-docker:/home/mobsf/.MobSF opensecurity/mobile-security-framework-mobsf:latest'
+  echo "setup_mobsf: done"
+}
+
+
+install_apktool(){
+  echo "install_apktool: start"
+  SUDO=""
+  [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+  TARGET_USER="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null || echo $USER)}}"
+  USERHOME="$(eval echo ~${TARGET_USER})"
+  DEST="$USERHOME/tools/mobile/apktool"
+  mkdir -p "$DEST" || { echo "mkdir failed"; return 1; }
+  # ensure jq available
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "jq missing — installing"
+    $SUDO apt-get update -y
+    $SUDO apt-get install -y jq
+  fi
+  # fetch latest jar url
+  if command -v curl >/dev/null 2>&1; then
+    URL="$(curl -s https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | jq -r '.assets[] | select(.name|endswith(".jar")) | .browser_download_url' | head -n1)"
+  elif command -v wget >/dev/null 2>&1; then
+    URL="$(wget -qO- https://api.github.com/repos/iBotPeaches/Apktool/releases/latest | jq -r '.assets[] | select(.name|endswith(".jar")) | .browser_download_url' | head -n1)"
+  else
+    echo "curl/wget missing; cannot fetch release info"; return 1
+  fi
+  [ -n "$URL" ] || { echo "no jar URL found"; return 1; }
+  FILE="$(basename "$URL")"
+  echo "downloading $FILE"
+  wget -O "$DEST/$FILE" "$URL" || { echo "download failed"; return 1; }
+  # add alias to .zshrc if missing
+  ZSHRC="$USERHOME/.zshrc"
+  ALIAS_LINE="alias apktool='java -jar $DEST/$FILE'"
+  touch "$ZSHRC"
+  if grep -Fxq "$ALIAS_LINE" "$ZSHRC" 2>/dev/null; then
+    echo "alias already present in $ZSHRC"
+  else
+    echo "$ALIAS_LINE" >> "$ZSHRC" && echo "alias added to $ZSHRC"
+  fi
+  echo "install_apktool: done"
+}
+
+
+install_rms(){
+  echo "install_rms: start"
+  # ensure npm exists (try to install via apt if missing)
+  if ! command -v npm >/dev/null 2>&1; then
+    echo "npm not found — attempting apt-get (you may need to run as root)"
+    if sudo apt-get update -y && sudo apt-get install -y nodejs npm; then
+      echo "node/npm installed"
+    else
+      echo "apt-get failed or you are not root; please install node/npm manually or run this script as root"
+      return 1
+    fi
+  fi
+
+  echo "Installing rms-runtime-mobile-security"
+  sudo npm install -g rms-runtime-mobile-security || { echo "npm install failed"; return 1; }
+  echo "install_rms: done - run by typine 'rms'"
+}
+
+
+install_jadx(){
+  echo "install_jadx: start"
+  TARGET_USER="${TARGET_USER:-$(logname 2>/dev/null || echo $USER)}"
+  USERHOME="$(eval echo ~${TARGET_USER})"
+  DEST="$USERHOME/tools/mobile/jadx"
+  mkdir -p "$DEST" || { echo "mkdir failed"; return 1; }
+
+  echo "fetching latest jadx release URL"
+  if command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    URL="$(curl -s https://api.github.com/repos/skylot/jadx/releases/latest | \
+      python3 -c "import sys,json; j=json.load(sys.stdin); a=j.get('assets',[]); u=[x.get('browser_download_url') for x in a if 'win' not in x.get('name','').lower() and (x.get('browser_download_url','').endswith('.zip') or 'linux' in x.get('name','').lower())]; print(u[0] if u else '')")"
+  else
+    echo "need curl+python3 to fetch release info"; return 1
+  fi
+
+  [ -n "$URL" ] || { echo "no download URL found"; return 1; }
+  FILE="$(basename "$URL")"
+  echo "downloading $FILE"
+  curl -L -o "$DEST/$FILE" "$URL" || { echo "download failed"; return 1; }
+
+  echo "extracting $FILE"
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -o "$DEST/$FILE" -d "$DEST" || { echo "unzip failed"; return 1; }
+  else
+    echo "no unzip tool (install 'unzip')"; return 1
+  fi
+
+  echo "removing archive"
+  rm -fv "$DEST/$FILE" || true
+
+  ZSHRC="$USERHOME/.zshrc"
+  PATH_LINE='export PATH="$HOME/tools/mobile/jadx/bin:$PATH"'
+  if grep -Fxq "$PATH_LINE" "$ZSHRC" 2>/dev/null; then
+    echo "PATH already in $ZSHRC"
+  else
+    echo "$PATH_LINE" >> "$ZSHRC" && echo "added PATH to $ZSHRC"
+  fi
+
+  echo "install_jadx: done - binaries (if any) in $DEST/bin"
+}
+
+
+
+
 main(){
   log_info "main: start"
+
+  # parse args
+  INSTALL_M=0; INSTALL_I=0; INSTALL_W=0; INSTALL_A=0
+  while getopts "miwa" opt; do
+    case "$opt" in
+      m) INSTALL_M=1;;
+      i) INSTALL_I=1;;
+      w) INSTALL_W=1;;
+      a) INSTALL_A=1;;
+    esac
+  done
+  if [ "$INSTALL_A" -eq 1 ]; then INSTALL_M=1; INSTALL_I=1; INSTALL_W=1; fi
+
+  echo "Selected options:"
+  [ "$INSTALL_M" -eq 1 ] && echo "  - mobile (-m): YES" || echo "  - mobile (-m): NO"
+  [ "$INSTALL_I" -eq 1 ] && echo "  - internal (-i): YES" || echo "  - internal (-i): NO"
+  [ "$INSTALL_W" -eq 1 ] && echo "  - web (-w): YES" || echo "  - web (-w): NO"
+  [ "$INSTALL_A" -eq 1 ] && echo "  - all (-a): YES"
+
+  echo "Executing core setup and utilities ..."
+
+  # Upgrades
+  # apt_update_upgrade
+  # install_packages
+  early_install_vmtools
+  install_python_tools
+
+  # Fixes
   fix_sudoers_ownership
   configure_passwordless_sudo
-  early_install_vmtools
-  apt_update_upgrade
-  install_packages
-  install_sublime_text
-  install_package_control
-  download_sublime_preferences
-  install_materialize_sublime_package
-  install_python_tools
   ensure_ssh_key_exists
-  configure_docker
   install_ubuntu_mono_and_set_xfce_font
   install_xfce_power_manager_xml
   disable_xfce_compositing_fast
+  spread_xfce_panel
   set_lid_switch_ignore
   set_zsh_prompt_symbol_to_at
+  update_wallpaper
+
+  # Utilities
+  setup_sublime
+  configure_docker
   install_fzf_for_user
   install_tmux_conf_and_plugins
-  install_netexec_via_pipx_raw
-  setup_dirsearch
   install_bat_v0_25_via_gdebi
+
+  # tools (grouped - conditional)
+  # internals
+  if [ "$INSTALL_I" -eq 1 ]; then
+    echo "==> Running internal tools..."
+    install_netexec_via_pipx_raw
+    clone_sliver_cheatsheet
+  else
+    echo "==> Skipping internal tools"
+  fi
+
+  # web
+  if [ "$INSTALL_W" -eq 1 ]; then
+    echo "==> Running web tools..."
+    setup_dirsearch
+  else
+    echo "==> Skipping web tools"
+  fi
+
+  # mobile
+  if [ "$INSTALL_M" -eq 1 ]; then
+    echo "==> Running mobile tools..."
+    install_frida_pipx_objection
+    setup_mobsf
+    install_apktool_nosudo
+    install_rms
+    install_jadx
+  else
+    echo "==> Skipping mobile tools"
+  fi
+
+  # done
   log_info "main: finished - run 'exec zsh' in the user session and restart XFCE if needed"
 }
 
