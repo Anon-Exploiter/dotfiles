@@ -290,6 +290,9 @@ update_wallpaper(){
     _run_as_desktop_user "xfconf-query -c xfce4-desktop -p '$key' -s '$IMG'" || echo "xfconf-query failed for $key"
   done
 
+  _run_as_desktop_user 'xfconf-query -c xfce4-desktop -p /backdrop/screen0/monitorVirtual1/workspace0/last-image -n -t string -s /usr/share/backgrounds/kali/kali-metal-dark-16x9.png'
+
+
   echo "update_wallpaper: done"
 }
 
@@ -479,8 +482,8 @@ install_tmux_conf_and_plugins(){
 # -----------------------
 install_netexec_via_pipx_raw(){
   log_info "install_netexec_via_pipx_raw: running pipx install"
-  pipx install git+https://github.com/Pennyw0rth/NetExec
-  pipx ensurepath
+  sudo -u "${TARGET_USER}" bash -lc 'pipx install git+https://github.com/Pennyw0rth/NetExec'
+  sudo -u "${TARGET_USER}" bash -lc 'pipx ensurepath'
   log_info "install_netexec_via_pipx_raw: finished (check exit status)"
 }
 
@@ -566,7 +569,6 @@ install_bat_v0_25_via_gdebi() {
 }
 
 
-
 clone_sliver_cheatsheet(){
   log_info "clone_sliver_cheatsheet: start"
   DEST="$HOME/tools"
@@ -586,8 +588,8 @@ clone_sliver_cheatsheet(){
 
 install_frida_pipx_objection(){
   log_info "installing frida-tools and objection via pipx"
-  pipx install frida-tools objection
-  pipx ensurepath
+  sudo -u "${TARGET_USER}" bash -lc 'pipx install frida-tools objection'
+  sudo -u "${TARGET_USER}" bash -lc 'pipx ensurepath'
   log_info "install_frida_pipx_objection: done"
 }
 
@@ -652,9 +654,8 @@ install_rms(){
   echo "install_rms: start"
   # ensure npm exists (try to install via apt if missing)
   if ! command -v npm >/dev/null 2>&1; then
-    echo "npm not found — attempting apt-get (you may need to run as root)"
     if sudo apt-get update -y && sudo apt-get install -y nodejs npm; then
-      echo "node/npm installed"
+      return 0
     else
       echo "apt-get failed or you are not root; please install node/npm manually or run this script as root"
       return 1
@@ -663,7 +664,7 @@ install_rms(){
 
   echo "Installing rms-runtime-mobile-security"
   sudo npm install -g rms-runtime-mobile-security || { echo "npm install failed"; return 1; }
-  echo "install_rms: done - run by typine 'rms'"
+  echo "install_rms: done - run by typing 'rms'"
 }
 
 
@@ -709,8 +710,6 @@ install_jadx(){
 }
 
 
-
-
 main(){
   log_info "main: start"
 
@@ -735,8 +734,8 @@ main(){
   echo "Executing core setup and utilities ..."
 
   # Upgrades
-  # apt_update_upgrade
-  # install_packages
+  apt_update_upgrade
+  install_packages
   early_install_vmtools
   install_python_tools
 
@@ -782,7 +781,7 @@ main(){
     echo "==> Running mobile tools..."
     install_frida_pipx_objection
     setup_mobsf
-    install_apktool_nosudo
+    install_apktool
     install_rms
     install_jadx
   else
