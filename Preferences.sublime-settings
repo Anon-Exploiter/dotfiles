@@ -25,4 +25,5 @@
     "theme": "Material Behave.sublime-theme",
     "translate_tabs_to_spaces": false,
     "index_files": false,
+    "word_wrap": "true",
 }
