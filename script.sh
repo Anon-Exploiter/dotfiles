@@ -719,26 +719,42 @@ install_jadx(){
 }
 
 
+
+# Wifi Tools
+
+install_eaphammer(){
+  log_info "install_eaphammer:start"
+  export DEBIAN_FRONTEND=noninteractive
+  sudo apt-get update -y
+  sudo apt-get install -y eaphammer || log_warn "eaphammer install failed"
+  log_info "install_eaphammer:done"
+}
+
+
+
+
 main(){
   log_info "main: start"
 
   # parse args
-  INSTALL_M=0; INSTALL_I=0; INSTALL_W=0; INSTALL_A=0
-  while getopts "miwa" opt; do
+  INSTALL_M=0; INSTALL_I=0; INSTALL_W=0; INSTALL_A=0; INSTALL_WIFI=0
+  while getopts "miwaW" opt; do
     case "$opt" in
       m) INSTALL_M=1;;
       i) INSTALL_I=1;;
       w) INSTALL_W=1;;
       a) INSTALL_A=1;;
+      W) INSTALL_WIFI=1;;
     esac
   done
-  if [ "$INSTALL_A" -eq 1 ]; then INSTALL_M=1; INSTALL_I=1; INSTALL_W=1; fi
+  if [ "$INSTALL_A" -eq 1 ]; then INSTALL_M=1; INSTALL_I=1; INSTALL_W=1; INSTALL_WIFI=1; fi
 
   echo "Selected options:"
   [ "$INSTALL_M" -eq 1 ] && echo "  - mobile (-m): YES" || echo "  - mobile (-m): NO"
   [ "$INSTALL_I" -eq 1 ] && echo "  - internal (-i): YES" || echo "  - internal (-i): NO"
   [ "$INSTALL_W" -eq 1 ] && echo "  - web (-w): YES" || echo "  - web (-w): NO"
   [ "$INSTALL_A" -eq 1 ] && echo "  - all (-a): YES"
+  [ "$INSTALL_WIFI" -eq 1 ] && echo "  - wifi (positional): YES" || echo "  - wifi (positional): NO"
 
   echo "Executing core setup and utilities ..."
 
@@ -798,8 +814,20 @@ main(){
     echo "==> Skipping mobile tools"
   fi
 
+  # eaphammer (always install core eaphammer package)
+  
+
+  # wifi toolset (only if positional 'wifi' was passed)
+  if [ "$INSTALL_WIFI" -eq 1 ]; then
+    echo "==> Installing wifi tools..."
+    install_eaphammer 
+  else
+    echo "==> Skipping wifi tools"
+  fi
+
   # done
   log_info "main: finished - run 'exec zsh' in the user session and restart XFCE if needed"
 }
+
 
 main "$@"
