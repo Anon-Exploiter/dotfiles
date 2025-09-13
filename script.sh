@@ -615,7 +615,7 @@ setup_mobsf(){
   mkdir -p "$DEST"
   sudo chown 9901:9901 "$DEST" || echo "sudo chown failed"
   echo "To start mobsf -> http://localhost:8000"
-  echo 'sudo docker run -it --rm -p 8000:8000 -v /home/user/tools/mobile/mobsf-docker:/home/mobsf/.MobSF opensecurity/mobile-security-framework-mobsf:latest'
+  echo 'sudo docker run -it --rm -p 8000:8000 -v /home/$USER/tools/mobile/mobsf-docker:/home/mobsf/.MobSF opensecurity/mobile-security-framework-mobsf:latest'
   echo "setup_mobsf: done"
 }
 
