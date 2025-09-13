@@ -488,6 +488,15 @@ install_netexec_via_pipx_raw(){
 }
 
 
+
+install_bloodhoundce_via_pipx_raw(){
+  log_info "install_bloodhoundce_via_pipx_raw: running pipx install"
+  sudo -u "${TARGET_USER}" bash -lc 'pipx install bloodhound-ce'
+  sudo -u "${TARGET_USER}" bash -lc 'pipx ensurepath'
+  log_info "install_bloodhoundce_via_pipx_raw: finished (check exit status)"
+}
+
+
 # -----------------------
 # Setup dirsearch
 # -----------------------
@@ -763,6 +772,7 @@ main(){
   if [ "$INSTALL_I" -eq 1 ]; then
     echo "==> Running internal tools..."
     install_netexec_via_pipx_raw
+    install_bloodhoundce_via_pipx_raw
     clone_sliver_cheatsheet
   else
     echo "==> Skipping internal tools"
