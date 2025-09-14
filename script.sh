@@ -595,11 +595,11 @@ clone_sliver_cheatsheet(){
 }
 
 
-install_frida_pipx_objection(){
-  log_info "installing frida-tools and objection via pipx"
-  sudo -u "${TARGET_USER}" bash -lc 'pipx install frida-tools objection'
+install_frida_pipx(){
+  log_info "install_frida_pipx: installing frida-tools via pipx"
+  sudo -u "${TARGET_USER}" bash -lc 'pipx install frida-tools'
   sudo -u "${TARGET_USER}" bash -lc 'pipx ensurepath'
-  log_info "install_frida_pipx_objection: done"
+  log_info "install_frida_pipx: done"
 }
 
 setup_mobsf(){
@@ -773,6 +773,50 @@ install_frida_ios_dump(){
 
 
 
+# Install objection
+install_objection_editable(){
+  log_info "install_objection_editable:start"
+  if [ -z "${TARGET_USER}" ]; then
+    if [ -n "${SUDO_USER}" ]; then TARGET_USER="${SUDO_USER}"; else TARGET_USER="$(whoami)"; fi
+  fi
+  USER_HOME=$(eval echo "~${TARGET_USER}")
+  TOOLS_DIR="${USER_HOME}/tools/mobile"
+  export DEBIAN_FRONTEND=noninteractive
+
+  sudo apt-get update -y
+  sudo apt-get install -y git python3-venv python3-pip nodejs npm build-essential || log_warn "deps install failed"
+
+  if [ "${TARGET_USER}" = "$(whoami)" ]; then
+    mkdir -p "${TOOLS_DIR}" && cd "${TOOLS_DIR}" || { log_warn "cd tools failed"; return 1; }
+    if [ ! -d objection ]; then git clone https://github.com/sensepost/objection || log_warn "git clone failed"; fi
+    cd objection || { log_warn "cd objection failed"; return 1; }
+    python3 -m venv env
+    . env/bin/activate
+    pip3 install --upgrade pip
+    pip3 install --editable . || log_warn "pip editable install failed"
+    cd agent && npm install || log_warn "npm install agent failed"; cd ..
+    deactivate || true
+  else
+    sudo -u "${TARGET_USER}" bash -lc "mkdir -p '${TOOLS_DIR}' && cd '${TOOLS_DIR}' || exit 1; \
+      if [ ! -d objection ]; then git clone https://github.com/sensepost/objection; fi; \
+      cd objection || exit 1; python3 -m venv env; . env/bin/activate; pip3 install --upgrade pip; \
+      pip3 install --editable . || true; cd agent; npm install || true; cd ..; deactivate || true" || log_warn "objection install (sudo) had errors"
+  fi
+
+  VENV_BIN="${TOOLS_DIR}/objection/env/bin/objection"
+  if [ -x "${VENV_BIN}" ]; then
+    sudo ln -sf "${VENV_BIN}" /usr/local/bin/objection || log_warn "symlink failed"
+  fi
+
+  if command -v objection >/dev/null 2>&1; then
+    log_info "install_objection_editable:ok"
+  else
+    log_warn "install_objection_editable:objection not in PATH (may require re-login)"
+  fi
+  log_info "install_objection_editable:done"
+}
+
+
 
 
 # Wifi Tools
@@ -860,13 +904,14 @@ main(){
   # mobile
   if [ "$INSTALL_M" -eq 1 ]; then
     echo "==> Running mobile tools..."
-    install_frida_pipx_objection
+    install_frida_pipx
     setup_mobsf
     install_apktool
     install_rms
     install_jadx
     install_palera1n
     install_frida_ios_dump
+    install_objection_editable
   else
     echo "==> Skipping mobile tools"
   fi
