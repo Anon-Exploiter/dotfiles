@@ -7,6 +7,5 @@ Created the `script.sh` file through ChatGPT (wasted few hours) to help with ins
 
 ```bash
 wget https://raw.githubusercontent.com/Anon-Exploiter/dotfiles/refs/heads/main/script.sh
-chmod +x script.sh
-sudo ./script.sh
+sudo bash ./script.sh
 ```
