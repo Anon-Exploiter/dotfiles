@@ -504,7 +504,7 @@ setup_dirsearch() {
   log_info "setup_dirsearch: start"
   T="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
   H="$(eval echo ~${T})"
-  sudo -u "${T}" bash -lc "set -euo pipefail
+  sudo -u "${TARGET_USER}" bash -lc "set -euo pipefail
     mkdir -p \"${H}/tools/web\"
     cd \"${H}/tools/web\"
     if [ -d dirsearch/.git ]; then
@@ -612,8 +612,8 @@ setup_mobsf(){
     echo "docker missing; install docker first"; return 1
   fi
   docker pull "$IMAGE" >/dev/null 2>&1
-  mkdir -p "$DEST"
-  sudo chown 9901:9901 "$DEST" || echo "sudo chown failed"
+  sudo -u "${TARGET_USER}" bash -lc "mkdir -p $DEST"
+  sudo chown 9901:9901 -Rv "$DEST" || echo "sudo chown failed"
   echo "To start mobsf -> http://localhost:8000"
   echo 'sudo docker run -it --rm -p 8000:8000 -v /home/$USER/tools/mobile/mobsf-docker:/home/mobsf/.MobSF opensecurity/mobile-security-framework-mobsf:latest'
   echo "setup_mobsf: done"
@@ -719,6 +719,61 @@ install_jadx(){
 }
 
 
+# Palera1n for jailbreaking iOS 
+install_palera1n(){
+  log_info "install_palera1n:start"
+  if command -v palera1n >/dev/null 2>&1; then log_info "install_palera1n:already"; return; fi
+  sudo apt-get update -y
+  sudo apt-get install -y curl || log_warn "curl install failed"
+  sudo /bin/sh -c "$(curl -fsSL https://static.palera.in/scripts/install.sh)" || log_warn "palera1n install failed"
+  log_info "install_palera1n:done"
+}
+
+
+# Frida iOS Dump
+install_frida_ios_dump(){
+  log_info "install_frida_ios_dump:start"
+  # determine target user/home
+  if [ -z "${TARGET_USER}" ]; then
+    if [ -n "${SUDO_USER}" ]; then TARGET_USER="${SUDO_USER}"; else TARGET_USER="$(whoami)"; fi
+  fi
+  USER_HOME=$(eval echo "~${TARGET_USER}")
+  TOOLS_DIR="${USER_HOME}/tools/mobile"
+  export DEBIAN_FRONTEND=noninteractive
+
+  sudo apt-get update -y
+  sudo apt-get install -y git python3-venv python3-pip nodejs npm build-essential || log_warn "deps install failed"
+
+  # clone or update repo as target user
+  if [ "${TARGET_USER}" = "$(whoami)" ]; then
+    bash -lc "mkdir -p '${TOOLS_DIR}' && cd '${TOOLS_DIR}' && \
+      if [ ! -d frida-ios-dump ]; then git clone https://github.com/IPMegladon/frida-ios-dump; fi && \
+      cd frida-ios-dump && git fetch --all && git checkout 4f26c0d" || log_warn "git clone/checkout failed"
+  else
+    sudo -u "${TARGET_USER}" bash -lc "mkdir -p '${TOOLS_DIR}' && cd '${TOOLS_DIR}' && \
+      if [ ! -d frida-ios-dump ]; then git clone https://github.com/IPMegladon/frida-ios-dump; fi && \
+      cd frida-ios-dump && git fetch --all && git checkout 4f26c0d" || log_warn "git clone/checkout failed"
+  fi
+
+  # setup python venv, pip deps, npm build as target user
+  if [ "${TARGET_USER}" = "$(whoami)" ]; then
+    bash -lc "cd '${TOOLS_DIR}/frida-ios-dump' && python3 -m venv env && . env/bin/activate && \
+      pip install --upgrade pip && pip install -r requirements.txt && mkdir -p dist && \
+      npm install frida-objc-bridge --save && npm run build || true; deactivate" || log_warn "venv/npm build failed"
+  else
+    sudo -u "${TARGET_USER}" bash -lc "cd '${TOOLS_DIR}/frida-ios-dump' && python3 -m venv env && . env/bin/activate && \
+      pip install --upgrade pip && pip install -r requirements.txt && mkdir -p dist && \
+      npm install frida-objc-bridge --save && npm run build || true; deactivate" || log_warn "venv/npm build failed"
+  fi
+
+  echo 'Usage: python3 dump.py -H 192.168.10.118 -u mobile -P mobile com.org.app'
+
+  log_info "install_frida_ios_dump:done - repo at ${TOOLS_DIR}/frida-ios-dump"
+}
+
+
+
+
 
 # Wifi Tools
 
@@ -810,6 +865,8 @@ main(){
     install_apktool
     install_rms
     install_jadx
+    install_palera1n
+    install_frida_ios_dump
   else
     echo "==> Skipping mobile tools"
   fi
