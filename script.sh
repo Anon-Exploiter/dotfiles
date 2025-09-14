@@ -818,6 +818,32 @@ install_objection_editable(){
 
 
 
+# for iOS logs
+install_libimobiledevice_utils(){
+  log_info "install_libimobiledevice_utils:start"
+  export DEBIAN_FRONTEND=noninteractive
+  sudo apt-get update -y
+  sudo apt-get install -y libimobiledevice-utils ideviceinstaller || log_warn "libimobiledevice install failed"
+  log_info "install_libimobiledevice_utils:done"
+}
+
+
+# Grapefruit iOS
+install_grapefruit(){
+  log_info "install_grapefruit:start"
+  export DEBIAN_FRONTEND=noninteractive
+  command -v npm >/dev/null 2>&1 || { sudo apt-get update -y; sudo apt-get install -y npm nodejs || log_warn "node/npm missing"; }
+  sudo npm install -g igf || log_warn "npm igf install failed"
+  if command -v igf >/dev/null 2>&1; then
+    log_info "install_grapefruit:ok"
+  else
+    log_warn "install_grapefruit:not in PATH"
+  fi
+  log_info "install_grapefruit:done"
+}
+
+
+
 
 # Wifi Tools
 
@@ -904,20 +930,25 @@ main(){
   # mobile
   if [ "$INSTALL_M" -eq 1 ]; then
     echo "==> Running mobile tools..."
+    # General
     install_frida_pipx
     setup_mobsf
-    install_apktool
     install_rms
+    install_objection_editable
+
+    # Android
+    install_apktool
     install_jadx
+
+    # iOS
     install_palera1n
     install_frida_ios_dump
-    install_objection_editable
+    install_libimobiledevice_utils
+    install_grapefruit
+
   else
     echo "==> Skipping mobile tools"
   fi
-
-  # eaphammer (always install core eaphammer package)
-  
 
   # wifi toolset (only if positional 'wifi' was passed)
   if [ "$INSTALL_WIFI" -eq 1 ]; then
