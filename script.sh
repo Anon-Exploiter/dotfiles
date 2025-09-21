@@ -847,6 +847,18 @@ install_grapefruit(){
 
 # Wifi Tools
 
+
+install_kali_tools_wireless(){
+  log_info "install_kali_tools_wireless:start"
+  export DEBIAN_FRONTEND=noninteractive
+  sudo apt-get update -y
+  sudo apt-get install -y kali-tools-wireless || log_warn "kali-tools-wireless install failed"
+  log_info "install_kali_tools_wireless:done"
+}
+
+
+
+
 install_eaphammer(){
   log_info "install_eaphammer:start"
   export DEBIAN_FRONTEND=noninteractive
@@ -953,6 +965,7 @@ main(){
   # wifi toolset (only if positional 'wifi' was passed)
   if [ "$INSTALL_WIFI" -eq 1 ]; then
     echo "==> Installing wifi tools..."
+    install_kali_tools_wireless
     install_eaphammer 
   else
     echo "==> Skipping wifi tools"
