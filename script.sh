@@ -25,6 +25,24 @@ early_install_vmtools(){ apt-get update -y >/dev/null 2>&1 || true; apt-get inst
 # -----------------------
 # Package & system tasks
 # -----------------------
+
+setup_noninteractive_apt(){
+  log_info "setup_noninteractive_apt:start"
+  set -e
+  # dpkg: keep existing configs unless maintainer scripts handle it
+  sudo mkdir -p /etc/apt/apt.conf.d
+  printf '%s\n' 'Dpkg::Options{ "--force-confdef"; "--force-confold"; };' \
+  | sudo tee /etc/apt/apt.conf.d/90force-conf >/dev/null
+
+  # needrestart: auto-restart services, suppress kernel nags
+  sudo mkdir -p /etc/needrestart/conf.d
+  printf '%s\n' '$nrconf{restart} = "a";' '$nrconf{kernelhints} = 0;' \
+  | sudo tee /etc/needrestart/conf.d/zzz-auto-restart.conf >/dev/null
+
+  log_info "setup_noninteractive_apt:done"
+}
+
+
 apt_update_upgrade(){
   log_info "apt: update & upgrade"
   export DEBIAN_FRONTEND=noninteractive
@@ -957,6 +975,7 @@ main(){
   echo "Executing core setup and utilities ..."
 
   # Upgrades
+  setup_noninteractive_apt
   apt_update_upgrade
   install_packages
   early_install_vmtools
