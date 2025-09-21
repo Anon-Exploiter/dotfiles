@@ -1058,6 +1058,7 @@ main(){
 
   # done
   log_info "main: finished - run 'exec zsh' in the user session and restart XFCE if needed"
+  log_info "Please change the password of the default user with: sudo passwd $USER"
 }
 
 
