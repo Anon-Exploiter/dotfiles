@@ -374,6 +374,29 @@ set_lid_switch_ignore(){
 
 
 
+# XFCE auto lock
+disable_auto_lock_xfce(){
+  log_info "disable_auto_lock_xfce:start"
+  set -e
+  TARGET_USER="${TARGET_USER:-${SUDO_USER:-}}"; [ -z "$TARGET_USER" ] && TARGET_USER="$(whoami)"
+  USER_HOME="$(eval echo "~${TARGET_USER}")"
+  run_as_user(){ if [ "${TARGET_USER}" = "$(whoami)" ]; then bash -lc "$1"; else sudo -u "$TARGET_USER" bash -lc "$1"; fi }
+
+  # XFCE Screensaver: no lock, no idle activation
+  run_as_user "xfconf-query -c xfce4-screensaver -p /lock-enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /lock-enabled -s false || true"
+  run_as_user "xfconf-query -c xfce4-screensaver -p /idle-activation-enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /idle-activation-enabled -s false || true"
+
+  # Power manager: no blanking, no DPMS, no lock on suspend/hibernate
+  run_as_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -n -t int -s 0 || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 0 || true"
+  run_as_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -n -t int -s 0 || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -s 0 || true"
+  run_as_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -n -t bool -s false || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -s false || true"
+  run_as_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -n -t bool -s false || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -s false || true"
+
+  log_info "disable_auto_lock_xfce:done"
+}
+
+
+
 
 # -----------------------
 # zsh .zshrc updates (working PROMPT block)
@@ -602,6 +625,10 @@ install_frida_pipx(){
   log_info "install_frida_pipx: done"
 }
 
+
+
+
+
 setup_mobsf(){
   echo "setup_mobsf: start"
   IMAGE="opensecurity/mobile-security-framework-mobsf:latest"
@@ -618,6 +645,41 @@ setup_mobsf(){
   echo 'sudo docker run -it --rm -p 8000:8000 -v /home/$USER/tools/mobile/mobsf-docker:/home/mobsf/.MobSF opensecurity/mobile-security-framework-mobsf:latest'
   echo "setup_mobsf: done"
 }
+
+
+
+install_adb_platform_tools(){
+  log_info "install_adb_platform_tools:start"
+  set -e
+  TARGET_USER="${TARGET_USER:-${SUDO_USER:-}}"; [ -z "$TARGET_USER" ] && TARGET_USER="$(whoami)"
+  DEST_PARENT="/home/kali/tools/mobile"
+  URL="https://dl.google.com/android/repository/platform-tools-latest-linux.zip"
+  if [ ! -x "$DEST_PARENT/platform-tools/adb" ]; then
+    sudo apt-get update
+    sudo apt-get install -y unzip curl
+    if [ "${TARGET_USER}" = "$(whoami)" ]; then
+      mkdir -p "$DEST_PARENT"
+      rm -rf "$DEST_PARENT/platform-tools"
+      curl -L -o "$DEST_PARENT/platform-tools.zip" "$URL"
+      unzip "$DEST_PARENT/platform-tools.zip" -d "$DEST_PARENT"
+      rm -f "$DEST_PARENT/platform-tools.zip"
+    else
+      sudo -u "$TARGET_USER" bash -lc "mkdir -p '$DEST_PARENT'; rm -rf '$DEST_PARENT/platform-tools'; curl -L -o '$DEST_PARENT/platform-tools.zip' '$URL'; unzip '$DEST_PARENT/platform-tools.zip' -d '$DEST_PARENT'; rm -f '$DEST_PARENT/platform-tools.zip'"
+      sudo chown -R "$TARGET_USER":"$TARGET_USER" "$DEST_PARENT"
+    fi
+  fi
+  USER_HOME="$(eval echo "~${TARGET_USER}")"
+  ZSHRC="$USER_HOME/.zshrc"
+  PATH_LINE='export PATH="/home/kali/tools/mobile/platform-tools:$PATH"'
+  if [ "${TARGET_USER}" = "$(whoami)" ]; then
+    touch "$ZSHRC"
+    grep -qxF "$PATH_LINE" "$ZSHRC" || echo "$PATH_LINE" >> "$ZSHRC"
+  else
+    sudo -u "$TARGET_USER" bash -lc "touch '$ZSHRC'; grep -qxF \"$PATH_LINE\" '$ZSHRC' || echo \"$PATH_LINE\" >> '$ZSHRC'"
+  fi
+  log_info "install_adb_platform_tools:done"
+}
+
 
 
 install_apktool(){
@@ -847,7 +909,6 @@ install_grapefruit(){
 
 # Wifi Tools
 
-
 install_kali_tools_wireless(){
   log_info "install_kali_tools_wireless:start"
   export DEBIAN_FRONTEND=noninteractive
@@ -910,6 +971,7 @@ main(){
   disable_xfce_compositing_fast
   spread_xfce_panel
   set_lid_switch_ignore
+  disable_auto_lock_xfce
   set_zsh_prompt_symbol_to_at
   update_wallpaper
 
@@ -935,6 +997,7 @@ main(){
   if [ "$INSTALL_W" -eq 1 ]; then
     echo "==> Running web tools..."
     setup_dirsearch
+
   else
     echo "==> Skipping web tools"
   fi
@@ -949,6 +1012,7 @@ main(){
     install_objection_editable
 
     # Android
+    install_adb_platform_tools
     install_apktool
     install_jadx
 
@@ -965,8 +1029,10 @@ main(){
   # wifi toolset (only if positional 'wifi' was passed)
   if [ "$INSTALL_WIFI" -eq 1 ]; then
     echo "==> Installing wifi tools..."
+    
     install_kali_tools_wireless
     install_eaphammer 
+
   else
     echo "==> Skipping wifi tools"
   fi
