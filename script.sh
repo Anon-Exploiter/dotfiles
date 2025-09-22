@@ -489,6 +489,7 @@ ZSH_PROMPT_EOF
 # -----------------------
 # fzf install
 # -----------------------
+update
 install_fzf_for_user(){
   log_info "install_fzf_for_user: start"
   FZF_DIR="${USER_HOME}/.fzf"
@@ -689,11 +690,12 @@ install_adb_platform_tools(){
   USER_HOME="$(eval echo "~${TARGET_USER}")"
   ZSHRC="$USER_HOME/.zshrc"
   PATH_LINE='export PATH="/home/kali/tools/mobile/platform-tools:$PATH"'
+
   if [ "${TARGET_USER}" = "$(whoami)" ]; then
     touch "$ZSHRC"
-    grep -qxF "$PATH_LINE" "$ZSHRC" || echo "$PATH_LINE" >> "$ZSHRC"
+    grep -qxF "$PATH_LINE" "$ZSHRC" || printf '%s\n' "$PATH_LINE" >> "$ZSHRC"
   else
-    sudo -u "$TARGET_USER" bash -lc "touch '$ZSHRC'; grep -qxF \"$PATH_LINE\" '$ZSHRC' || echo \"$PATH_LINE\" >> '$ZSHRC'"
+    sudo -u "$TARGET_USER" bash -lc "touch '$ZSHRC'; grep -qxF '$PATH_LINE' '$ZSHRC' || printf '%s\n' '$PATH_LINE' >> '$ZSHRC'"
   fi
   log_info "install_adb_platform_tools:done"
 }
