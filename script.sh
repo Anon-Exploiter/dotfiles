@@ -400,9 +400,13 @@ disable_auto_lock_xfce(){
   USER_HOME="$(eval echo "~${TARGET_USER}")"
   run_as_user(){ if [ "${TARGET_USER}" = "$(whoami)" ]; then bash -lc "$1"; else sudo -u "$TARGET_USER" bash -lc "$1"; fi }
 
+
   # XFCE Screensaver: no lock, no idle activation
   run_as_user "xfconf-query -c xfce4-screensaver -p /lock-enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /lock-enabled -s false || true"
   run_as_user "xfconf-query -c xfce4-screensaver -p /idle-activation-enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /idle-activation-enabled -s false || true"
+  run_as_user "xfconf-query -c xfce4-screensaver -p /saver/enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /saver/enabled -s false || true"
+  run_as_user "xfconf-query -c xfce4-screensaver -p /saver/lock -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /saver/lock -s false || true"
+
 
   # Power manager: no blanking, no DPMS, no lock on suspend/hibernate
   run_as_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -n -t int -s 0 || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 0 || true"
