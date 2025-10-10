@@ -19,7 +19,7 @@ USER_HOME="$(eval echo ~${TARGET_USER})"
 secure_sudoers_file(){ f="$1"; [ -n "$f" -a -e "$f" ] || return 1; BACKUP="${f}.bak.$(date +%s)"; cp -a "$f" "$BACKUP" 2>/dev/null || true; chown root:root "$f" 2>/dev/null || true; chmod 0440 "$f" 2>/dev/null || true; visudo -c -f "$f" >/dev/null 2>&1 || { log_warn "visudo failed for $f; restoring"; [ -f "$BACKUP" ] && mv -f "$BACKUP" "$f"; return 1; }; }
 fix_sudoers_ownership(){ [ -d /etc/sudoers.d ] || return 0; for f in /etc/sudoers.d/*; do [ -e "$f" ] || continue; uid=$(stat -c %u "$f" 2>/dev/null || echo); [ "$uid" = "0" ] && continue; log_warn "fixing owner for $f (uid=$uid)"; secure_sudoers_file "$f" || log_warn "secure_sudoers_file failed for $f"; done; }
 configure_passwordless_sudo(){ T="${TARGET_USER}"; [ -n "$T" ] || return 0; FILE="/etc/sudoers.d/${T}_nopasswd"; printf '%s\n' "${T} ALL=(ALL) NOPASSWD:ALL" > "/tmp/$$.sudoers"; mv -f "/tmp/$$.sudoers" "${FILE}"; chown root:root "${FILE}" 2>/dev/null || true; chmod 0440 "${FILE}" 2>/dev/null || true; log_info "passwordless sudo written for ${T}"; }
-attempt_fix_broken_with_force_overwrite(){ apt-get -o Dpkg::Options::="--force-overwrite" --fix-broken install -y >/dev/null 2>&1 || { dpkg --configure -a >/dev/null 2>&1 || true; apt-get -o Dpkg::Options::="--force-overwrite" --fix-broken install -y >/dev/null 2>&1 || return 1; }; }
+attempt_fix_broken_with_force_overwrite(){ apt-get -o Dpkg::Options::="--force-overwrite" --fix-broken install -y || { dpkg --configure -a || true; apt-get -o Dpkg::Options::="--force-overwrite" --fix-broken install -y || return 1; }; }
 early_install_vmtools(){ apt-get update -y >/dev/null 2>&1 || true; apt-get install -y 'open-vm-tools*' >/dev/null 2>&1 || true; }
 
 # -----------------------
@@ -426,63 +426,43 @@ disable_auto_lock_xfce(){
 
 set_zsh_prompt_symbol_to_at(){
   log_info "set_zsh_prompt_symbol_to_at: start"
+
   TARGET_USER="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
   [ -n "$TARGET_USER" ] || { log_warn "Cannot determine target user"; return 1; }
-  USER_HOME="$(eval echo ~${TARGET_USER})"
+  USER_HOME="${USER_HOME:-$(eval echo ~"${TARGET_USER}")}"
   ZSHRC="${USER_HOME}/.zshrc"
-  BACKUP_DIR="${USER_HOME}/.config/.zshrc_backups"
-  TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-  HIST_BACKUP="${BACKUP_DIR}/zsh_hist_values.${TIMESTAMP}.bak"
 
-  # ensure file & backup dir
-  [ -f "${ZSHRC}" ] || sudo -u "${TARGET_USER}" touch "${ZSHRC}"
-  sudo -u "${TARGET_USER}" mkdir -p "${BACKUP_DIR}" || true
-
-  # capture previous single-line values for backup
-  prev_histsize="$(sudo awk -F= '/^[[:space:]]*HISTSIZE[[:space:]]*=/{ val=$0; gsub(/^[[:space:]]*HISTSIZE[[:space:]]*=[[:space:]]*/, "", val); print val }' "${ZSHRC}" | tail -n1 || true)"
-  prev_savehist="$(sudo awk -F= '/^[[:space:]]*SAVEHIST[[:space:]]*=/{ val=$0; gsub(/^[[:space:]]*SAVEHIST[[:space:]]*=[[:space:]]*/, "", val); print val }' "${ZSHRC}" | tail -n1 || true)"
-  prev_prompt="$(sudo grep -E '^[[:space:]]*PROMPT[[:space:]]*=' "${ZSHRC}" | tail -n1 || true)"
-  prev_alias_ll="$(sudo grep -E '^[[:space:]]*alias[[:space:]]+ll[[:space:]]*=' "${ZSHRC}" | tail -n1 || true)"
-  prev_alias_cat="$(sudo grep -E '^[[:space:]]*alias[[:space:]]+cat[[:space:]]*=' "${ZSHRC}" | tail -n1 || true)"
-
-  # Set HISTSIZE and SAVEHIST (overwrite or append)
-  NEW_HISTSIZE="10000000"; NEW_SAVEHIST="200000000"
-  if sudo grep -q -E '^[[:space:]]*HISTSIZE[[:space:]]*=' "${ZSHRC}"; then
-    sudo sed -i -E "s/^[[:space:]]*HISTSIZE[[:space:]]*=.*/HISTSIZE=${NEW_HISTSIZE}/" "${ZSHRC}" || log_warn "failed to replace HISTSIZE"
+  if [ "$(id -u)" -eq 0 ]; then
+    RUN_AS=(sudo -u "${TARGET_USER}" bash -lc)
+    SUDO_ROOT="sudo"
   else
-    sudo bash -lc "echo $'\\n# set by postinstall\\nHISTSIZE=${NEW_HISTSIZE}' >> '${ZSHRC}'" || log_warn "failed to append HISTSIZE"
-  fi
-  if sudo grep -q -E '^[[:space:]]*SAVEHIST[[:space:]]*=' "${ZSHRC}"; then
-    sudo sed -i -E "s/^[[:space:]]*SAVEHIST[[:space:]]*=.*/SAVEHIST=${NEW_SAVEHIST}/" "${ZSHRC}" || log_warn "failed to replace SAVEHIST"
-  else
-    sudo bash -lc "echo $'\\n# set by postinstall\\nSAVEHIST=${NEW_SAVEHIST}' >> '${ZSHRC}'" || log_warn "failed to append SAVEHIST"
+    RUN_AS=(bash -lc)
+    SUDO_ROOT=""
   fi
 
-  # Remove any existing prompt_symbol and PROMPT lines to avoid duplicates
-  sudo sed -i -E '/^[[:space:]]*prompt_symbol[[:space:]]*=.*/d' "${ZSHRC}" || true
-  sudo sed -i -E '/^[[:space:]]*PROMPT[[:space:]]*=.*/d' "${ZSHRC}" || true
+  "${RUN_AS[@]}" "touch '${ZSHRC}'" || { log_warn "cannot touch ${ZSHRC}"; return 1; }
 
-  # Append prompt_symbol together with PROMPT (line by line) as a literal block
-  sudo bash -lc "cat >> '${ZSHRC}' <<'ZSH_PROMPT_EOF'
+  # remove orphaned duplicate second-line + any prior block
+  ${SUDO_ROOT} sed -i -E '/^[[:space:]]*└─%B.*%b%F\{reset\} .*/d' "${ZSHRC}"
+  ${SUDO_ROOT} sed -i -E '/^# >>> postinstall PROMPT START$/,/^# <<< postinstall PROMPT END$/d' "${ZSHRC}"
 
+  # write block to temp, protect from expansion, then relax perms for user read
+  TMP="$(mktemp)" || { log_warn "mktemp failed"; return 1; }
+  cat > "${TMP}" <<'ZSH_PROMPT_EOF'
+# >>> postinstall PROMPT START
 # set by postinstall - prompt symbol + custom PROMPT (replaces previous PROMPT)
 prompt_symbol=@
-PROMPT=\$'%F{%(#.blue.green)}┌──\${debian_chroot:+(\$debian_chroot)─}\${VIRTUAL_ENV:+(\$(basename \$VIRTUAL_ENV))─}(%B%F{%(#.red.blue)}%n'\$prompt_symbol\$'%m%b%F{%(#.blue.green)} - %{\$fg[yellow]%}[%D{%f/%m/%y} %D{%L:%M:%S})-[%B%F{reset}%(6~.%-1~/…/%4~.%5~)%b%F{%(#.blue.green)}]
-└─%B%(#.%F{red}#.%F{blue}\$)%b%F{reset} '
+PROMPT=$'%F{%(#.blue.green)}┌──${debian_chroot:+($debian_chroot)─}${VIRTUAL_ENV:+($(basename $VIRTUAL_ENV))─}(%B%F{%(#.red.blue)}%n'$prompt_symbol$'%m%b%F{%(#.blue.green)} - %{$fg[yellow]%}[%D{%f/%m/%y} %D{%L:%M:%S})-[%B%F{reset}%(6~.%-1~/…/%4~.%5~)%b%F{%(#.blue.green)}]\n└─%B%(#.%F{red}#.%F{blue}$)%b%F{reset} '
+# <<< postinstall PROMPT END
 ZSH_PROMPT_EOF
-" || { log_warn "failed to append prompt block"; return 1; }
+  chmod 0644 "${TMP}"
 
-  # Ensure alias ll is set (replace or append)
-  DESIRED_ALIAS_LL="alias ll='ls -lah'"
-  if sudo grep -q -E '^[[:space:]]*alias[[:space:]]+ll[[:space:]]*=' "${ZSHRC}"; then
-    sudo sed -i -E "s/^[[:space:]]*alias[[:space:]]+ll[[:space:]]*=.*/${DESIRED_ALIAS_LL}/" "${ZSHRC}" || log_warn "failed to replace alias ll"
-  else
-    sudo bash -lc "echo $'\\n# set by postinstall\\n${DESIRED_ALIAS_LL}' >> '${ZSHRC}'" || log_warn "failed to append alias ll"
-  fi
+  # append as target user, then clean up
+  "${RUN_AS[@]}" "cat '${TMP}' >> '${ZSHRC}'" || { rm -f "${TMP}"; log_warn "failed to append prompt block"; return 1; }
+  rm -f "${TMP}"
 
-  # Fix ownership/permissions
-  sudo chown "${TARGET_USER}:${TARGET_USER}" "${ZSHRC}" >/dev/null 2>&1 || log_warn "chown failed on ${ZSHRC}"
-  sudo chmod 0644 "${ZSHRC}" >/dev/null 2>&1 || log_warn "chmod failed on ${ZSHRC}"
+  ${SUDO_ROOT} chown "${TARGET_USER}:${TARGET_USER}" "${ZSHRC}" 2>/dev/null || true
+  ${SUDO_ROOT} chmod 0644 "${ZSHRC}" 2>/dev/null || true
 
   log_info "set_zsh_prompt_symbol_to_at: done"
   return 0
@@ -490,10 +470,11 @@ ZSH_PROMPT_EOF
 
 
 
+
+
 # -----------------------
 # fzf install
 # -----------------------
-update
 install_fzf_for_user(){
   log_info "install_fzf_for_user: start"
   FZF_DIR="${USER_HOME}/.fzf"
@@ -623,6 +604,27 @@ install_bat_v0_25_via_gdebi() {
   return 0
 }
 
+gunzip_rockyou(){
+  SRC="/usr/share/wordlists/rockyou.txt.gz"
+  if [ ! -f "$SRC" ]; then
+    log_warn "$SRC not found"
+    return 0
+  fi
+
+  # prefer no-op sudo if already root
+  if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+  else
+    SUDO="sudo"
+  fi
+
+  log_info "gunzip_rockyou: starting"
+  $SUDO gunzip -d "$SRC" >/dev/null 2>&1 || { log_warn "gunzip failed"; return 1; }
+  log_info "gunzip_rockyou: done"
+  return 0
+}
+
+
 
 clone_sliver_cheatsheet(){
   log_info "clone_sliver_cheatsheet: start"
@@ -639,6 +641,38 @@ clone_sliver_cheatsheet(){
   fi
   log_info "clone_sliver_cheatsheet: done"
 }
+
+
+install_openjdk11_for_cobaltstrike(){
+  log_info "install_openjdk11_for_cobaltstrike:start"
+
+  # prefer no-op sudo if already root
+  if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+  else
+    SUDO="sudo"
+  fi
+
+  export DEBIAN_FRONTEND=noninteractive
+
+  $SUDO apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update failed"
+  $SUDO apt-get install -y openjdk-11-jdk || log_warn "apt-get install"
+  if [ $? -ne 0 ]; then
+    log_warn "openjdk-11-jdk install failed"
+    return 1
+  fi
+
+  log_info "install_openjdk11_for_cobaltstrike:done"
+  return 0
+}
+
+
+
+
+
+# Internal
+
+
 
 
 install_frida_pipx(){
@@ -661,7 +695,7 @@ setup_mobsf(){
   if ! command -v docker >/dev/null 2>&1; then
     echo "docker missing; install docker first"; return 1
   fi
-  docker pull "$IMAGE" >/dev/null 2>&1
+  docker pull "$IMAGE"
   sudo -u "${TARGET_USER}" bash -lc "mkdir -p $DEST"
   sudo chown 9901:9901 -Rv "$DEST" || echo "sudo chown failed"
   echo "To start mobsf -> http://localhost:8000"
@@ -942,8 +976,6 @@ install_kali_tools_wireless(){
 }
 
 
-
-
 install_eaphammer(){
   log_info "install_eaphammer:start"
   export DEBIAN_FRONTEND=noninteractive
@@ -951,6 +983,67 @@ install_eaphammer(){
   sudo apt-get install -y eaphammer || log_warn "eaphammer install failed"
   log_info "install_eaphammer:done"
 }
+
+
+install_dhclient_wifi(){
+  log_info "install_dhclient_wifi:start"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y >/dev/null 2>&1 || log_warn "apt update failed"
+  apt-get install -y isc-dhcp-client || log_warn "isc-dhcp-client install failed"
+  if ! command -v dhclient >/dev/null 2>&1; then
+    log_warn "dhclient not found after install"
+  fi
+  log_info "install_dhclient_wifi:done"
+}
+
+
+download_pcapfilter_sh(){
+  log_info "download_pcapfilter_sh:start"
+
+  # must come from the script's env
+  if [ -z "${TARGET_USER}" ] || [ -z "${USER_HOME}" ]; then
+    log_warn "TARGET_USER/USER_HOME not set"
+    return 1
+  fi
+
+  URL="https://gist.githubusercontent.com/r4ulcl/f3470f097d1cd21dbc5a238883e79fb2/raw/78e097e1d4a9eb5f43ab0b2763195c04f02c4998/pcapFilter.sh"
+  DEST_DIR="${USER_HOME}/tools/wifi"
+  DEST_FILE="${DEST_DIR}/pcapFilter.sh"
+
+  # run actions as the invoking user, not root
+  if [ "$(id -u)" -eq 0 ]; then
+    RUN_AS=(sudo -u "${TARGET_USER}" bash -lc)
+  else
+    RUN_AS=(bash -lc)
+  fi
+
+  "${RUN_AS[@]}" "mkdir -p '${DEST_DIR}'" || { log_warn "mkdir failed: ${DEST_DIR}"; return 1; }
+
+  if command -v curl >/dev/null 2>&1; then
+    "${RUN_AS[@]}" "curl -fsSL '${URL}' -o '${DEST_FILE}'" || { log_warn "curl download failed"; return 1; }
+  elif command -v wget >/dev/null 2>&1; then
+    "${RUN_AS[@]}" "wget -q -O '${DEST_FILE}' '${URL}'" || { log_warn "wget download failed"; return 1; }
+  else
+    log_warn "neither curl nor wget available"
+    return 1
+  fi
+
+  "${RUN_AS[@]}" "chmod +x '${DEST_FILE}'" || log_warn "chmod +x failed on ${DEST_FILE}"
+
+  # ensure ownership when running with sudo
+  if [ "$(id -u)" -eq 0 ]; then
+    chown "${TARGET_USER}:${TARGET_USER}" "${DEST_FILE}" 2>/dev/null || true
+  fi
+
+  log_info "download_pcapfilter_sh:done -> ${DEST_FILE}"
+  return 0
+}
+
+
+
+
+
+
 
 
 
@@ -1006,14 +1099,18 @@ main(){
   install_fzf_for_user
   install_tmux_conf_and_plugins
   install_bat_v0_25_via_gdebi
+  gunzip_rockyou
 
   # tools (grouped - conditional)
   # internals
   if [ "$INSTALL_I" -eq 1 ]; then
     echo "==> Running internal tools..."
+
     install_netexec_via_pipx_raw
     install_bloodhoundce_via_pipx_raw
     clone_sliver_cheatsheet
+    install_openjdk11_for_cobaltstrike
+
   else
     echo "==> Skipping internal tools"
   fi
@@ -1021,6 +1118,7 @@ main(){
   # web
   if [ "$INSTALL_W" -eq 1 ]; then
     echo "==> Running web tools..."
+    
     setup_dirsearch
 
   else
@@ -1054,9 +1152,11 @@ main(){
   # wifi toolset (only if positional 'wifi' was passed)
   if [ "$INSTALL_WIFI" -eq 1 ]; then
     echo "==> Installing wifi tools..."
-    
+
     install_kali_tools_wireless
     install_eaphammer 
+    install_dhclient_wifi
+    download_pcapfilter_sh
 
   else
     echo "==> Skipping wifi tools"
