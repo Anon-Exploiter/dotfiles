@@ -2,8 +2,11 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-log_info(){ echo "[INFO] $*"; }
-log_warn(){ echo "[WARN] $*"; }
+log_info(){ printf "[INFO] %s\n" "$*"; }
+log_warn(){ printf "[WARN] %s\n" "$*"; }
+log_section(){ printf "\n[====] %s\n" "$*"; }
+log_task_start(){ printf "[INFO] ▶ %s\n" "$*"; }
+log_task_done(){ printf "[INFO] ✓ %s\n" "$*"; }
 
 # Re-run under sudo for system tasks
 if [ "$EUID" -ne 0 ]; then
@@ -14,119 +17,205 @@ TARGET_USER="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
 USER_HOME="$(eval echo ~${TARGET_USER})"
 
 # -----------------------
-# Minified helpers
+# Shared helpers
 # -----------------------
-secure_sudoers_file(){ f="$1"; [ -n "$f" -a -e "$f" ] || return 1; BACKUP="${f}.bak.$(date +%s)"; cp -a "$f" "$BACKUP" 2>/dev/null || true; chown root:root "$f" 2>/dev/null || true; chmod 0440 "$f" 2>/dev/null || true; visudo -c -f "$f" >/dev/null 2>&1 || { log_warn "visudo failed for $f; restoring"; [ -f "$BACKUP" ] && mv -f "$BACKUP" "$f"; return 1; }; }
-fix_sudoers_ownership(){ [ -d /etc/sudoers.d ] || return 0; for f in /etc/sudoers.d/*; do [ -e "$f" ] || continue; uid=$(stat -c %u "$f" 2>/dev/null || echo); [ "$uid" = "0" ] && continue; log_warn "fixing owner for $f (uid=$uid)"; secure_sudoers_file "$f" || log_warn "secure_sudoers_file failed for $f"; done; }
-configure_passwordless_sudo(){ T="${TARGET_USER}"; [ -n "$T" ] || return 0; FILE="/etc/sudoers.d/${T}_nopasswd"; printf '%s\n' "${T} ALL=(ALL) NOPASSWD:ALL" > "/tmp/$$.sudoers"; mv -f "/tmp/$$.sudoers" "${FILE}"; chown root:root "${FILE}" 2>/dev/null || true; chmod 0440 "${FILE}" 2>/dev/null || true; log_info "passwordless sudo written for ${T}"; }
-attempt_fix_broken_with_force_overwrite(){ apt-get -o Dpkg::Options::="--force-overwrite" --fix-broken install -y || { dpkg --configure -a || true; apt-get -o Dpkg::Options::="--force-overwrite" --fix-broken install -y || return 1; }; }
-early_install_vmtools(){ apt-get update -y >/dev/null 2>&1 || true; apt-get install -y 'open-vm-tools*' >/dev/null 2>&1 || true; }
+
+# Determine user + home when called after mutations.
+refresh_target_context(){
+  TARGET_USER="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
+  USER_HOME="$(eval echo ~${TARGET_USER})"
+}
+
+# Run a command as the target desktop user.
+run_as_target_user(){
+  local cmd="$1"
+  if [ "$(id -u)" -eq 0 ]; then
+    sudo -u "${TARGET_USER}" bash -lc "$cmd"
+  else
+    bash -lc "$cmd"
+  fi
+}
+
+# Download a file with curl or wget while keeping flags configurable.
+download_file(){
+  local url="$1" dest="$2" curl_opts="${3:--fsSL}" wget_opts="${4:--qO}"
+  if command -v curl >/dev/null 2>&1; then
+    curl ${curl_opts} "$url" -o "$dest"
+  elif command -v wget >/dev/null 2>&1; then
+    wget ${wget_opts} "$dest" "$url"
+  else
+    return 1
+  fi
+}
+
+# Secure a sudoers drop-in file and restore on visudo failure.
+secure_sudoers_file(){
+  local f="$1"
+  [ -n "$f" ] && [ -e "$f" ] || return 1
+  local BACKUP="${f}.bak.$(date +%s)"
+  cp -a "$f" "$BACKUP" 2>/dev/null || true
+  chown root:root "$f" 2>/dev/null || true
+  chmod 0440 "$f" 2>/dev/null || true
+  visudo -c -f "$f" >/dev/null 2>&1 || {
+    log_warn "visudo failed for $f; restoring"
+    [ -f "$BACKUP" ] && mv -f "$BACKUP" "$f"
+    return 1
+  }
+}
+
+# Correct sudoers.d ownership for non-root files.
+fix_sudoers_ownership(){
+  [ -d /etc/sudoers.d ] || return 0
+  for f in /etc/sudoers.d/*; do
+    [ -e "$f" ] || continue
+    uid=$(stat -c %u "$f" 2>/dev/null || echo)
+    [ "$uid" = "0" ] && continue
+    log_warn "fixing owner for $f (uid=$uid)"
+    secure_sudoers_file "$f" || log_warn "secure_sudoers_file failed for $f"
+  done
+}
+
+# Write a passwordless sudo drop-in for the target user.
+configure_passwordless_sudo(){
+  local T="${TARGET_USER}"
+  [ -n "$T" ] || return 0
+  local FILE="/etc/sudoers.d/${T}_nopasswd"
+  printf '%s\n' "${T} ALL=(ALL) NOPASSWD:ALL" > "/tmp/$$.sudoers"
+  mv -f "/tmp/$$.sudoers" "${FILE}"
+  chown root:root "${FILE}" 2>/dev/null || true
+  chmod 0440 "${FILE}" 2>/dev/null || true
+  log_info "passwordless sudo written for ${T}"
+}
+
+# Attempt to repair dpkg state with force-overwrite.
+attempt_fix_broken_with_force_overwrite(){
+  apt-get -o Dpkg::Options::="--force-overwrite" --fix-broken install -y || {
+    dpkg --configure -a || true
+    apt-get -o Dpkg::Options::="--force-overwrite" --fix-broken install -y || return 1
+  }
+}
+
+# Bring in VM tools early to prevent display issues.
+early_install_vm_tools(){
+  apt-get update -y >/dev/null 2>&1 || true
+  apt-get install -y 'open-vm-tools*' >/dev/null 2>&1 || true
+}
 
 # -----------------------
 # Package & system tasks
 # -----------------------
 
-setup_noninteractive_apt(){
-  log_info "setup_noninteractive_apt:start"
+# Configure apt/needrestart to avoid prompts during upgrades.
+configure_noninteractive_apt(){
+  log_task_start "configure_noninteractive_apt"
   set -e
-  # dpkg: keep existing configs unless maintainer scripts handle it
   sudo mkdir -p /etc/apt/apt.conf.d
   printf '%s\n' 'Dpkg::Options{ "--force-confdef"; "--force-confold"; };' \
   | sudo tee /etc/apt/apt.conf.d/90force-conf >/dev/null
 
-  # needrestart: auto-restart services, suppress kernel nags
   sudo mkdir -p /etc/needrestart/conf.d
   printf '%s\n' '$nrconf{restart} = "a";' '$nrconf{kernelhints} = 0;' \
   | sudo tee /etc/needrestart/conf.d/zzz-auto-restart.conf >/dev/null
 
-  log_info "setup_noninteractive_apt:done"
+  log_task_done "configure_noninteractive_apt"
 }
 
-
-apt_update_upgrade(){
-  log_info "apt: update & upgrade"
+# Run apt update/upgrade with recovery attempts.
+update_and_upgrade_apt(){
+  log_task_start "apt update & upgrade"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y || log_warn "apt update failed"
   apt-get -y upgrade || { log_warn "apt upgrade failed; attempting recovery"; attempt_fix_broken_with_force_overwrite || log_warn "fix-broken failed"; }
   apt-get -y autoremove || true
   apt-get -y autoclean || true
-  log_info "apt: done"
+  log_task_done "apt update & upgrade"
 }
 
-install_packages(){
-  log_info "install_packages: start"
+# Install the core kali packages used everywhere.
+install_core_packages(){
+  log_task_start "install_core_packages"
   PACKAGES=(build-essential git curl wget vim tmux htop jq unzip zip apt-transport-https ca-certificates gnupg python3 python3-pip python3-venv python3-dev python-is-python3 python3-virtualenv nmap net-tools tcpdump aircrack-ng hashcat john hydra sqlmap impacket-scripts nikto metasploit-framework burpsuite docker.io docker-compose openvpn wireshark remmina remmina-common remmina-dev gdebi)
   apt-get update || log_warn "apt-get update failed"
   if apt-get install -y "${PACKAGES[@]}"; then
-    log_info "install_packages: packages installed"
+    log_info "install_core_packages: packages installed"
   else
-    log_warn "install_packages: initial install failed; attempting recovery"
+    log_warn "install_core_packages: initial install failed; attempting recovery"
     attempt_fix_broken_with_force_overwrite || log_warn "attempt_fix_broken failed"
     if apt-get install -y "${PACKAGES[@]}"; then
-      log_info "install_packages: packages installed on retry"
+      log_info "install_core_packages: packages installed on retry"
     else
-      log_warn "install_packages: install still failed after retry"
+      log_warn "install_core_packages: install still failed after retry"
     fi
   fi
-  log_info "install_packages: done"
+  log_task_done "install_core_packages"
 }
 
+# Enable docker service and add user to the group.
 configure_docker(){
   if command -v docker >/dev/null 2>&1; then
     systemctl enable --now docker >/dev/null 2>&1 || log_warn "docker enable/start failed"
     usermod -aG docker "${SUDO_USER:-${TARGET_USER}}" 2>/dev/null || true
-    log_info "configure_docker: done"
+    log_task_done "configure_docker"
   fi
 }
 
-ensure_ssh_key_exists(){
-  log_info "ensure_ssh_key_exists: start"
-  SSH_PRI="${USER_HOME}/.ssh/id_ed25519"
+# Ensure an ed25519 SSH key exists for the target user.
+ensure_ssh_key(){
+  log_task_start "ensure_ssh_key"
+  local SSH_PRI="${USER_HOME}/.ssh/id_ed25519"
   if [ ! -f "${SSH_PRI}" ]; then
-    sudo -u "${TARGET_USER}" mkdir -p "$(dirname "${SSH_PRI}")"
-    sudo -u "${TARGET_USER}" ssh-keygen -t ed25519 -a 100 -f "${SSH_PRI}" -N "" -C "${TARGET_USER}@$(hostname -s)" >/dev/null 2>&1 || log_warn "ssh-keygen failed"
+    run_as_target_user "mkdir -p '$(dirname "${SSH_PRI}")'"
+    run_as_target_user "ssh-keygen -t ed25519 -a 100 -f '${SSH_PRI}' -N '' -C '${TARGET_USER}@$(hostname -s)'" >/dev/null 2>&1 || log_warn "ssh-keygen failed"
     log_info "Generated SSH key for ${TARGET_USER}"
   else
     log_info "SSH key exists"
   fi
+  log_task_done "ensure_ssh_key"
 }
 
-install_python_tools(){
-  log_info "install_python_tools: ensuring pipx"
+# Install pipx and ensure it is on PATH for the user.
+ensure_python_tools(){
+  log_task_start "ensure_python_tools (pipx)"
   apt-get install -y pipx python3-pip >/dev/null 2>&1 || true
-  sudo -u "${TARGET_USER}" bash -lc 'python3 -m pip install --user pipx >/dev/null 2>&1 || true; python3 -m pipx ensurepath >/dev/null 2>&1 || true' || true
-  log_info "install_python_tools: done"
+  run_as_target_user 'python3 -m pip install --user pipx >/dev/null 2>&1 || true; python3 -m pipx ensurepath >/dev/null 2>&1 || true' || true
+  log_task_done "ensure_python_tools (pipx)"
 }
 
-install_ubuntu_mono_and_set_xfce_font(){
-  log_info "install_ubuntu_mono_and_set_xfce_font: start"
-  P="${TARGET_USER}"; H="$(eval echo ~${P})"; FD="${H}/.local/share/fonts"; mkdir -p "${FD}" || true
-  base="https://raw.githubusercontent.com/google/fonts/main/ufl/ubuntumono"
-  files=(UbuntuMono-Regular.ttf UbuntuMono-Italic.ttf UbuntuMono-Bold.ttf UbuntuMono-BoldItalic.ttf)
+# Bring in Ubuntu Mono fonts and rebuild the cache.
+install_ubuntu_mono_fontset(){
+  log_task_start "install_ubuntu_mono_fontset"
+  local P="${TARGET_USER}"
+  local H="$(eval echo ~${P})"
+  local FD="${H}/.local/share/fonts"
+  mkdir -p "${FD}" || true
+  local base="https://raw.githubusercontent.com/google/fonts/main/ufl/ubuntumono"
+  local files=(UbuntuMono-Regular.ttf UbuntuMono-Italic.ttf UbuntuMono-Bold.ttf UbuntuMono-BoldItalic.ttf)
   for f in "${files[@]}"; do
-    tgt="${FD}/${f}"
+    local tgt="${FD}/${f}"
     [ -f "${tgt}" ] && continue
-    if command -v curl >/dev/null 2>&1; then curl -fsSL "${base}/${f}" -o "/tmp/${f}" || continue
-    elif command -v wget >/dev/null 2>&1; then wget -qO "/tmp/${f}" "${base}/${f}" || continue
-    else log_warn "no downloader for fonts"; break
+    if download_file "${base}/${f}" "/tmp/${f}"; then
+      mv -f "/tmp/${f}" "${tgt}" 2>/dev/null || continue
+      chown "${P}:${P}" "${tgt}" 2>/dev/null || true
+      chmod 0644 "${tgt}" 2>/dev/null || true
+    else
+      log_warn "no downloader for fonts"
+      break
     fi
-    mv -f "/tmp/${f}" "${tgt}" 2>/dev/null || continue
-    chown "${P}:${P}" "${tgt}" 2>/dev/null || true
-    chmod 0644 "${tgt}" 2>/dev/null || true
   done
-  if command -v fc-cache >/dev/null 2>&1; then sudo -u "${P}" fc-cache -frv "${FD}" >/dev/null 2>&1 || true; fi
-  log_info "install_ubuntu_mono_and_set_xfce_font: done"
+  if command -v fc-cache >/dev/null 2>&1; then
+    sudo -u "${P}" fc-cache -frv "${FD}" >/dev/null 2>&1 || true
+  fi
+  log_task_done "install_ubuntu_mono_fontset"
 }
 
 # -----------------------
 # Sublime helpers
 # -----------------------
 setup_sublime(){
+  # Install Sublime Text with Package Control and user preferences.
   log_info "setup_sublime: start"
-  TARGET_USER="${TARGET_USER:-$(logname 2>/dev/null || echo "${SUDO_USER:-$USER}")}"
-  USER_HOME="${USER_HOME:-$(eval echo ~${TARGET_USER})}"
+  refresh_target_context
 
-  # add repo/key + install
   mkdir -p /etc/apt/keyrings >/dev/null 2>&1 || true
   if command -v curl >/dev/null 2>&1; then
     curl -fsSL https://download.sublimetext.com/sublimehq-pub.gpg | tee /etc/apt/keyrings/sublimehq-pub.asc >/dev/null 2>&1 || log_warn "sublime gpg fetch failed"
@@ -135,19 +224,18 @@ setup_sublime(){
   apt-get update -y >/dev/null 2>&1 || true
   apt-get install -y sublime-text >/dev/null 2>&1 || log_warn "sublime install failed"
 
-  # package control
-  DATA_DIR="${USER_HOME}/.config/sublime-text"
+  local DATA_DIR="${USER_HOME}/.config/sublime-text"
   [ -d "${DATA_DIR}" ] || DATA_DIR="${USER_HOME}/.config/sublime-text-3"
   mkdir -p "${DATA_DIR}/Installed Packages" 2>/dev/null || true
-  PC_URL="https://packagecontrol.io/Package%20Control.sublime-package"
-  PC_TARGET="${DATA_DIR}/Installed Packages/Package Control.sublime-package"
+  local PC_URL="https://packagecontrol.io/Package%20Control.sublime-package"
+  local PC_TARGET="${DATA_DIR}/Installed Packages/Package Control.sublime-package"
   if sudo -u "${TARGET_USER}" test -f "${PC_TARGET}" >/dev/null 2>&1; then
     log_info "Package Control present"
   else
     if command -v curl >/dev/null 2>&1; then
-      sudo -u "${TARGET_USER}" bash -lc "curl -fsSL '${PC_URL}' -o '${PC_TARGET}'" >/dev/null 2>&1 || log_warn "packagecontrol download failed"
+      run_as_target_user "curl -fsSL '${PC_URL}' -o '${PC_TARGET}'" >/dev/null 2>&1 || log_warn "packagecontrol download failed"
     elif command -v wget >/dev/null 2>&1; then
-      sudo -u "${TARGET_USER}" bash -lc "wget -qO '${PC_TARGET}' '${PC_URL}'" >/dev/null 2>&1 || log_warn "packagecontrol download failed"
+      run_as_target_user "wget -qO '${PC_TARGET}' '${PC_URL}'" >/dev/null 2>&1 || log_warn "packagecontrol download failed"
     else
       log_warn "no downloader for packagecontrol"
     fi
@@ -155,18 +243,14 @@ setup_sublime(){
     chmod 0644 "${PC_TARGET}" 2>/dev/null || true
   fi
 
-  # preferences
-  DEST_DIR="${DATA_DIR}/Packages/User"
-  DEST_FILE="${DEST_DIR}/Preferences.sublime-settings"
-  SRC_URL="https://raw.githubusercontent.com/Anon-Exploiter/dotfiles/refs/heads/main/Preferences.sublime-settings"
+  local DEST_DIR="${DATA_DIR}/Packages/User"
+  local DEST_FILE="${DEST_DIR}/Preferences.sublime-settings"
+  local SRC_URL="https://raw.githubusercontent.com/Anon-Exploiter/dotfiles/refs/heads/main/Preferences.sublime-settings"
   mkdir -p "${DEST_DIR}" 2>/dev/null || true
-  TMP="$(mktemp -p /tmp prefs.XXXXXX)" || TMP="/tmp/prefs.$$"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${SRC_URL}" -o "${TMP}" || { rm -f "${TMP}"; log_warn "curl failed"; TMP=""; }
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "${TMP}" "${SRC_URL}" || { rm -f "${TMP}"; log_warn "wget failed"; TMP=""; }
-  else
-    log_warn "no curl/wget"
+  local TMP="$(mktemp -p /tmp prefs.XXXXXX)" || TMP="/tmp/prefs.$$"
+  if ! download_file "${SRC_URL}" "${TMP}"; then
+    rm -f "${TMP}"
+    log_warn "downloader missing for sublime prefs"
     TMP=""
   fi
   if [ -n "${TMP}" ] && [ -f "${TMP}" ]; then
@@ -180,21 +264,16 @@ setup_sublime(){
     fi
   fi
 
-  # materialize package
-  PKG_DIR="${DATA_DIR}/Installed Packages"
+  local PKG_DIR="${DATA_DIR}/Installed Packages"
   mkdir -p "${PKG_DIR}" 2>/dev/null || true
-  TMPD="$(mktemp -d 2>/dev/null || echo /tmp/materialize.$$)"
-  ZIPURL="https://github.com/zyphlar/Materialize/archive/refs/heads/master.zip"
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${ZIPURL}" -o "${TMPD}/m.zip" >/dev/null 2>&1 || log_warn "materialize download failed"
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "${TMPD}/m.zip" "${ZIPURL}" >/dev/null 2>&1 || log_warn "materialize download failed"
-  else
-    log_warn "no downloader for materialize"
+  local TMPD="$(mktemp -d 2>/dev/null || echo /tmp/materialize.$$)"
+  local ZIPURL="https://github.com/zyphlar/Materialize/archive/refs/heads/master.zip"
+  if ! download_file "${ZIPURL}" "${TMPD}/m.zip"; then
+    log_warn "materialize download failed"
   fi
   (cd "${TMPD}" 2>/dev/null && unzip -q m.zip) 2>/dev/null || true
-  EX="$(find "${TMPD}" -maxdepth 1 -type d -name "*Materialize*" -print -quit || true)"
-  PACK="${TMPD}/pack"; mkdir -p "${PACK}"
+  local EX="$(find "${TMPD}" -maxdepth 1 -type d -name "*Materialize*" -print -quit || true)"
+  local PACK="${TMPD}/pack"; mkdir -p "${PACK}"
   [ -n "${EX}" ] && mv "${EX}/"* "${PACK}/" 2>/dev/null || true
   (cd "${PACK}" 2>/dev/null && zip -r -q "${TMPD}/Materialize.sublime-package" .) 2>/dev/null || true
   mv -f "${TMPD}/Materialize.sublime-package" "${PKG_DIR}/Materialize.sublime-package" 2>/dev/null || log_warn "move failed"
@@ -203,7 +282,6 @@ setup_sublime(){
 
   sudo chown $SUDO_USER:$SUDO_USER $DATA_DIR
   sudo chmod 755 $DATA_DIR
-
 
   log_info "setup_sublime: done"
 }
@@ -256,130 +334,127 @@ _run_as_desktop_user(){
 
 # spread out xfce panel & show labels (uses _run_as_desktop_user)
 spread_xfce_panel(){
-  echo "spread_xfce_panel: start"
+  log_task_start "spread_xfce_panel"
   if ! _run_as_desktop_user 'command -v xfconf-query >/dev/null 2>&1'; then
-    echo "xfconf-query not available for desktop user; skipping"
+    log_warn "xfconf-query not available for desktop user; skipping"
     return 0
   fi
 
-  plugins_out="$(_run_as_desktop_user 'xfconf-query -c xfce4-panel -p /plugins -l -v' )" || { echo "cannot list panel plugins"; return 0; }
+  plugins_out="$(_run_as_desktop_user 'xfconf-query -c xfce4-panel -p /plugins -l -v' )" || { log_warn "cannot list panel plugins"; return 0; }
   plugin_numbers="$(printf "%s" "$plugins_out" | grep -E "windowbuttons|tasklist" | awk '{print $1}' | cut -d "-" -f2 || true)"
   if [ -z "$plugin_numbers" ]; then
-    echo "no windowbuttons/tasklist plugin found"
+    log_warn "no windowbuttons/tasklist plugin found"
     return 0
   fi
 
   for p in $plugin_numbers; do
     grp_prop="/plugins/plugin-$p/grouping"
     lbl_prop="/plugins/plugin-$p/show-labels"
-    echo "plugin-$p: set grouping=0"
-    _run_as_desktop_user "xfconf-query -c xfce4-panel -p '$grp_prop' >/dev/null 2>&1 && xfconf-query -c xfce4-panel -p '$grp_prop' -s 0 || xfconf-query -c xfce4-panel -p '$grp_prop' -n -t int -s 0" || echo "warning: could not set $grp_prop"
-    echo "plugin-$p: set show-labels=true"
-    _run_as_desktop_user "xfconf-query -c xfce4-panel -p '$lbl_prop' >/dev/null 2>&1 && xfconf-query -c xfce4-panel -p '$lbl_prop' -s true || xfconf-query -c xfce4-panel -p '$lbl_prop' -n -t bool -s true" || echo "warning: could not set $lbl_prop"
+    log_info "plugin-$p: set grouping=0"
+    _run_as_desktop_user "xfconf-query -c xfce4-panel -p '$grp_prop' >/dev/null 2>&1 && xfconf-query -c xfce4-panel -p '$grp_prop' -s 0 || xfconf-query -c xfce4-panel -p '$grp_prop' -n -t int -s 0" || log_warn "could not set $grp_prop"
+    log_info "plugin-$p: set show-labels=true"
+    _run_as_desktop_user "xfconf-query -c xfce4-panel -p '$lbl_prop' >/dev/null 2>&1 && xfconf-query -c xfce4-panel -p '$lbl_prop' -s true || xfconf-query -c xfce4-panel -p '$lbl_prop' -n -t bool -s true" || log_warn "could not set $lbl_prop"
   done
-  echo "spread_xfce_panel: done"
+  log_task_done "spread_xfce_panel"
 }
 
 # update wallpaper - not working on fresh install - have to open the desktop UI once and set wallpaper - then this works lol
 update_wallpaper(){
-  echo "update_wallpaper: start"
+  log_task_start "update_wallpaper"
   apt-get -y update >/dev/null 2>&1
   apt-get -y install kali-wallpapers-2024 >/dev/null 2>&1
  
   IMG="/usr/share/backgrounds/kali/kali-metal-dark-16x9.png"
   if [ ! -f "$IMG" ]; then
-    echo "image missing: $IMG"
+    log_warn "image missing: $IMG"
     return 0
   fi
 
   if ! _run_as_desktop_user 'command -v xfconf-query >/dev/null 2>&1'; then
-    echo "xfconf-query not available for desktop user; skipping wallpaper update"
+    log_warn "xfconf-query not available for desktop user; skipping wallpaper update"
     return 0
   fi
 
   keys="$(_run_as_desktop_user 'xfconf-query -c xfce4-desktop -p /backdrop -l -R' | grep "last-image" || true)"
   if [ -z "$keys" ]; then
-    echo "no wallpaper keys found"
+    log_warn "no wallpaper keys found"
     return 0
   fi
 
   printf "%s\n" "$keys" | while IFS= read -r key; do
-    echo "setting wallpaper for key: $key"
-    _run_as_desktop_user "xfconf-query -c xfce4-desktop -p '$key' -s '$IMG'" || echo "xfconf-query failed for $key"
+    log_info "setting wallpaper for key: $key"
+    _run_as_desktop_user "xfconf-query -c xfce4-desktop -p '$key' -s '$IMG'" || log_warn "xfconf-query failed for $key"
   done
 
   _run_as_desktop_user 'xfconf-query -c xfce4-desktop -p /backdrop/screen0/monitorVirtual1/workspace0/last-image -n -t string -s /usr/share/backgrounds/kali/kali-metal-dark-16x9.png'
 
 
-  echo "update_wallpaper: done"
+  log_task_done "update_wallpaper"
 }
 
 
 disable_xfce_compositing_fast(){
-  echo "disable_xfce_compositing_fast: start"
+  # Disable XFCE compositing to improve VM performance.
+  log_task_start "disable_xfce_compositing_fast"
   # ensure xfconf available in desktop session
   if ! _run_as_desktop_user 'command -v xfconf-query >/dev/null 2>&1'; then
-    echo "xfconf-query not available for desktop user; skipping compositing change"
+    log_warn "xfconf-query not available for desktop user; skipping compositing change"
     return 0
   fi
 
   cur="$(_run_as_desktop_user 'xfconf-query -c xfwm4 -p /general/use_compositing' 2>/dev/null || true)"
   if [ "$cur" = "false" ]; then
-    echo "compositing already disabled"
+    log_info "compositing already disabled"
     return 0
   fi
 
-  echo "disabling compositing"
+  log_info "disabling compositing"
   _run_as_desktop_user "xfconf-query --channel=xfwm4 --property=/general/use_compositing >/dev/null 2>&1 && xfconf-query --channel=xfwm4 --property=/general/use_compositing --type=bool --set=false || xfconf-query --channel=xfwm4 --property=/general/use_compositing --type=bool --create --set=false" || \
-    echo "warning: could not set /general/use_compositing"
-  echo "disable_xfce_compositing_fast: done"
+    log_warn "could not set /general/use_compositing"
+  log_task_done "disable_xfce_compositing_fast"
 }
 
 install_xfce_power_manager_xml(){
-  echo "install_xfce_power_manager_xml: start"
-  TARGET_USER="${TARGET_USER:-$(logname 2>/dev/null || echo $USER)}"
-  USER_HOME="$(eval echo ~${TARGET_USER})"
-  SRC_URL="https://raw.githubusercontent.com/Anon-Exploiter/dotfiles/refs/heads/main/xfce4-power-manager.xml"
-  DEST_DIR="${USER_HOME}/.config/xfce4/xfconf/xfce-perchannel-xml"
-  DEST_FILE="${DEST_DIR}/xfce4-power-manager.xml"
+  # Drop in the XFCE power manager config for the target user.
+  log_task_start "install_xfce_power_manager_xml"
+  refresh_target_context
+  local SRC_URL="https://raw.githubusercontent.com/Anon-Exploiter/dotfiles/refs/heads/main/xfce4-power-manager.xml"
+  local DEST_DIR="${USER_HOME}/.config/xfce4/xfconf/xfce-perchannel-xml"
+  local DEST_FILE="${DEST_DIR}/xfce4-power-manager.xml"
 
-  mkdir -p "${DEST_DIR}" || { echo "mkdir failed: ${DEST_DIR}"; return 1; }
-  TMP="$(mktemp -p /tmp xfcepm.XXXXXX)" || TMP="/tmp/xfcepm.$$"
+  mkdir -p "${DEST_DIR}" || { log_warn "mkdir failed: ${DEST_DIR}"; return 1; }
+  local TMP="$(mktemp -p /tmp xfcepm.XXXXXX)" || TMP="/tmp/xfcepm.$$"
 
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${SRC_URL}" -o "${TMP}" || { rm -f "${TMP}"; echo "curl failed"; return 1; }
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "${TMP}" "${SRC_URL}" || { rm -f "${TMP}"; echo "wget failed"; return 1; }
-  else
+  if ! download_file "${SRC_URL}" "${TMP}"; then
     rm -f "${TMP}" 2>/dev/null || true
-    echo "no downloader (curl/wget) available"
+    log_warn "no downloader (curl/wget) available"
     return 1
   fi
 
   if [ -f "${DEST_FILE}" ] && cmp -s "${TMP}" "${DEST_FILE}"; then
     rm -f "${TMP}"
-    echo "xfce power xml identical; no change"
+    log_info "xfce power xml identical; no change"
     return 0
   fi
 
-  mv -f "${TMP}" "${DEST_FILE}" || { echo "mv failed"; rm -f "${TMP}" 2>/dev/null || true; return 1; }
+  mv -f "${TMP}" "${DEST_FILE}" || { log_warn "mv failed"; rm -f "${TMP}" 2>/dev/null || true; return 1; }
   chown "${TARGET_USER}:${TARGET_USER}" "${DEST_FILE}" 2>/dev/null || true
   chmod 0644 "${DEST_FILE}" 2>/dev/null || true
-  echo "installed xfce power manager xml -> ${DEST_FILE}"
+  log_info "installed xfce power manager xml -> ${DEST_FILE}"
 
-  # If xfconf-query is available in the desktop session, try to notify session (optional)
   if _run_as_desktop_user 'command -v xfconf-query >/dev/null 2>&1'; then
-    echo "notifying xfce session about new power-manager config"
+    log_info "notifying xfce session about new power-manager config"
     _run_as_desktop_user "xfconf-query -c xfce4-power-manager -p / -l >/dev/null 2>&1 || true" || true
   fi
 
-  echo "install_xfce_power_manager_xml: done"
+  log_task_done "install_xfce_power_manager_xml"
 }
 
 
 
 
 set_lid_switch_ignore(){
+  # Disable lid switch actions so the VM never suspends.
   log_info "set_lid_switch_ignore: start"
   FILE="/etc/systemd/logind.conf"; touch "${FILE}" || log_warn "cannot touch ${FILE}"
   sed -i -E 's/^[[:space:]]*#?[[:space:]]*HandleLidSwitch([[:space:]]*=.*)?/HandleLidSwitch=ignore/' "${FILE}" || true
@@ -394,25 +469,20 @@ set_lid_switch_ignore(){
 
 # XFCE auto lock
 disable_auto_lock_xfce(){
+  # Turn off XFCE auto-lock and display blanking settings.
   log_info "disable_auto_lock_xfce:start"
   set -e
-  TARGET_USER="${TARGET_USER:-${SUDO_USER:-}}"; [ -z "$TARGET_USER" ] && TARGET_USER="$(whoami)"
-  USER_HOME="$(eval echo "~${TARGET_USER}")"
-  run_as_user(){ if [ "${TARGET_USER}" = "$(whoami)" ]; then bash -lc "$1"; else sudo -u "$TARGET_USER" bash -lc "$1"; fi }
+  refresh_target_context
 
+  run_as_target_user "xfconf-query -c xfce4-screensaver -p /lock-enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /lock-enabled -s false || true"
+  run_as_target_user "xfconf-query -c xfce4-screensaver -p /idle-activation-enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /idle-activation-enabled -s false || true"
+  run_as_target_user "xfconf-query -c xfce4-screensaver -p /saver/enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /saver/enabled -s false || true"
+  run_as_target_user "xfconf-query -c xfce4-screensaver -p /saver/lock -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /saver/lock -s false || true"
 
-  # XFCE Screensaver: no lock, no idle activation
-  run_as_user "xfconf-query -c xfce4-screensaver -p /lock-enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /lock-enabled -s false || true"
-  run_as_user "xfconf-query -c xfce4-screensaver -p /idle-activation-enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /idle-activation-enabled -s false || true"
-  run_as_user "xfconf-query -c xfce4-screensaver -p /saver/enabled -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /saver/enabled -s false || true"
-  run_as_user "xfconf-query -c xfce4-screensaver -p /saver/lock -n -t bool -s false || xfconf-query -c xfce4-screensaver -p /saver/lock -s false || true"
-
-
-  # Power manager: no blanking, no DPMS, no lock on suspend/hibernate
-  run_as_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -n -t int -s 0 || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 0 || true"
-  run_as_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -n -t int -s 0 || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -s 0 || true"
-  run_as_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -n -t bool -s false || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -s false || true"
-  run_as_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -n -t bool -s false || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -s false || true"
+  run_as_target_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -n -t int -s 0 || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-ac -s 0 || true"
+  run_as_target_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -n -t int -s 0 || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/blank-on-battery -s 0 || true"
+  run_as_target_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -n -t bool -s false || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/dpms-enabled -s false || true"
+  run_as_target_user "xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -n -t bool -s false || xfconf-query -c xfce4-power-manager -p /xfce4-power-manager/lock-screen-suspend-hibernate -s false || true"
 
   log_info "disable_auto_lock_xfce:done"
 }
@@ -475,6 +545,7 @@ ZSH_PROMPT_EOF
 # -----------------------
 # fzf install
 # -----------------------
+# Clone and install fzf for the target user.
 install_fzf_for_user(){
   log_info "install_fzf_for_user: start"
   FZF_DIR="${USER_HOME}/.fzf"
@@ -486,13 +557,16 @@ install_fzf_for_user(){
 # -----------------------
 # tmux conf + plugins
 # -----------------------
+# Pull tmux.conf and keep tmux plugins in sync.
 install_tmux_conf_and_plugins(){
   log_info "install_tmux_conf_and_plugins: start"
   DEST_FILE="${USER_HOME}/.tmux.conf"; SRC_URL="https://raw.githubusercontent.com/Anon-Exploiter/dotfiles/refs/heads/main/.tmux.conf"
   TMP="$(mktemp -p /tmp tmuxconf.XXXXXX)" || TMP="/tmp/tmuxconf.$$"
-  if command -v curl >/dev/null 2>&1; then curl -fsSL "${SRC_URL}" -o "${TMP}" || { rm -f "${TMP}"; log_warn "curl failed"; return 1; }
-  elif command -v wget >/dev/null 2>&1; then wget -qO "${TMP}" "${SRC_URL}" || { rm -f "${TMP}"; log_warn "wget failed"; return 1; }
-  else rm -f "${TMP}" || true; log_warn "no downloader"; return 1; fi
+  if ! download_file "${SRC_URL}" "${TMP}"; then
+    rm -f "${TMP}" || true
+    log_warn "no downloader"
+    return 1
+  fi
   mv -f "${TMP}" "${DEST_FILE}"; chown "${TARGET_USER}:${TARGET_USER}" "${DEST_FILE}" 2>/dev/null || true; chmod 0644 "${DEST_FILE}" || true
   PLUGIN_DIR="${USER_HOME}/.tmux/plugins"; sudo -u "${TARGET_USER}" mkdir -p "${PLUGIN_DIR}"
   repos=( "https://github.com/tmux-plugins/tpm.git::tpm" "https://github.com/tmux-plugins/tmux-yank.git::tmux-yank" "https://github.com/tmux-plugins/tmux-logging.git::tmux-logging" "https://github.com/tmux-plugins/tmux-resurrect.git::tmux-resurrect" )
@@ -507,6 +581,7 @@ install_tmux_conf_and_plugins(){
 # -----------------------
 # Raw pipx installer (no sudo, exactly as requested)
 # -----------------------
+# Install NetExec straight from git via pipx.
 install_netexec_via_pipx_raw(){
   log_info "install_netexec_via_pipx_raw: running pipx install"
   sudo -u "${TARGET_USER}" bash -lc 'pipx install git+https://github.com/Pennyw0rth/NetExec'
@@ -515,7 +590,7 @@ install_netexec_via_pipx_raw(){
 }
 
 
-
+# Install BloodHound CE via pipx.
 install_bloodhoundce_via_pipx_raw(){
   log_info "install_bloodhoundce_via_pipx_raw: running pipx install"
   sudo -u "${TARGET_USER}" bash -lc 'pipx install bloodhound-ce'
@@ -527,11 +602,13 @@ install_bloodhoundce_via_pipx_raw(){
 # -----------------------
 # Setup dirsearch
 # -----------------------
+# Clone/update dirsearch and wire its virtualenv.
 setup_dirsearch() {
   log_info "setup_dirsearch: start"
   T="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null || whoami)}}"
   H="$(eval echo ~${T})"
-  sudo -u "${TARGET_USER}" bash -lc "set -euo pipefail
+  TARGET_USER="${T}"
+  run_as_target_user "set -euo pipefail
     mkdir -p \"${H}/tools/web\"
     cd \"${H}/tools/web\"
     if [ -d dirsearch/.git ]; then
@@ -551,6 +628,7 @@ setup_dirsearch() {
 
 
 install_bat_v0_25_via_gdebi() {
+  # Install bat 0.25.0 via gdebi and expose a cat alias.
   log_info "install_bat_v0_25_via_gdebi: start"
 
   export DEBIAN_FRONTEND=noninteractive
@@ -561,14 +639,7 @@ install_bat_v0_25_via_gdebi() {
   TMP_DEB="/tmp/bat_0.25.0_amd64.deb"
   rm -f "${TMP_DEB}" >/dev/null 2>&1 || true
 
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "${URL}" -o "${TMP_DEB}" || { log_warn "curl download failed"; return 1; }
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "${TMP_DEB}" "${URL}" || { log_warn "wget download failed"; return 1; }
-  else
-    log_warn "no downloader (curl/wget)"
-    return 1
-  fi
+  download_file "${URL}" "${TMP_DEB}" >/dev/null 2>&1 || { log_warn "download failed"; return 1; }
 
   if [ ! -s "${TMP_DEB}" ]; then
     log_warn "downloaded file is empty: ${TMP_DEB}"
@@ -605,6 +676,7 @@ install_bat_v0_25_via_gdebi() {
 }
 
 gunzip_rockyou(){
+  # Extract the bundled rockyou wordlist.
   SRC="/usr/share/wordlists/rockyou.txt.gz"
   if [ ! -f "$SRC" ]; then
     log_warn "$SRC not found"
@@ -627,6 +699,7 @@ gunzip_rockyou(){
 
 
 clone_sliver_cheatsheet(){
+  # Clone or refresh the sliver cheatsheet helper repo.
   log_info "clone_sliver_cheatsheet: start"
   DEST="$HOME/tools"
   REPO="https://github.com/Anon-Exploiter/sliver-cheatsheet.git"
@@ -644,6 +717,7 @@ clone_sliver_cheatsheet(){
 
 
 install_openjdk11_for_cobaltstrike(){
+  # Bring in OpenJDK 11 for Cobalt Strike usage.
   log_info "install_openjdk11_for_cobaltstrike:start"
 
   # prefer no-op sudo if already root
@@ -676,10 +750,11 @@ install_openjdk11_for_cobaltstrike(){
 
 
 install_frida_pipx(){
-  log_info "install_frida_pipx: installing frida-tools via pipx"
+  # Install frida-tools via pipx for the mobile toolkit.
+  log_task_start "install_frida_pipx"
   sudo -u "${TARGET_USER}" bash -lc 'pipx install frida-tools'
   sudo -u "${TARGET_USER}" bash -lc 'pipx ensurepath'
-  log_info "install_frida_pipx: done"
+  log_task_done "install_frida_pipx"
 }
 
 
@@ -687,26 +762,28 @@ install_frida_pipx(){
 
 
 setup_mobsf(){
-  echo "setup_mobsf: start"
+  # Prepare the MobSF docker image and data directory.
+  log_task_start "setup_mobsf"
   IMAGE="opensecurity/mobile-security-framework-mobsf:latest"
   USERNAME="${TARGET_USER:-${SUDO_USER:-$(logname || echo $USER)}}"
   USERHOME="$(eval echo ~${USERNAME})"
   DEST="$USERHOME/tools/mobile/mobsf-docker"
   if ! command -v docker >/dev/null 2>&1; then
-    echo "docker missing; install docker first"; return 1
+    log_warn "docker missing; install docker first"; return 1
   fi
   docker pull "$IMAGE"
   sudo -u "${TARGET_USER}" bash -lc "mkdir -p $DEST"
-  sudo chown 9901:9901 -Rv "$DEST" || echo "sudo chown failed"
-  echo "To start mobsf -> http://localhost:8000"
-  echo 'sudo docker run -it --rm -p 8000:8000 -v /home/$USER/tools/mobile/mobsf-docker:/home/mobsf/.MobSF opensecurity/mobile-security-framework-mobsf:latest'
-  echo "setup_mobsf: done"
+  sudo chown 9901:9901 -Rv "$DEST" || log_warn "sudo chown failed"
+  log_info "To start mobsf -> http://localhost:8000"
+  log_info "sudo docker run -it --rm -p 8000:8000 -v /home/\$USER/tools/mobile/mobsf-docker:/home/mobsf/.MobSF opensecurity/mobile-security-framework-mobsf:latest"
+  log_task_done "setup_mobsf"
 }
 
 
 
 install_adb_platform_tools(){
-  log_info "install_adb_platform_tools:start"
+  # Download Android platform-tools and wire PATH.
+  log_task_start "install_adb_platform_tools"
   set -e
   TARGET_USER="${TARGET_USER:-${SUDO_USER:-}}"; [ -z "$TARGET_USER" ] && TARGET_USER="$(whoami)"
   DEST_PARENT="/home/kali/tools/mobile"
@@ -735,13 +812,14 @@ install_adb_platform_tools(){
   else
     sudo -u "$TARGET_USER" bash -lc "touch '$ZSHRC'; grep -qxF '$PATH_LINE' '$ZSHRC' || printf '%s\n' '$PATH_LINE' >> '$ZSHRC'"
   fi
-  log_info "install_adb_platform_tools:done"
+  log_task_done "install_adb_platform_tools"
 }
 
 
 
 install_apktool(){
-  echo "install_apktool: start"
+  # Pull the latest apktool release and add a zsh alias.
+  log_task_start "install_apktool"
   SUDO=""
   [ "$(id -u)" -ne 0 ] && SUDO="sudo"
   TARGET_USER="${TARGET_USER:-${SUDO_USER:-$(logname 2>/dev/null || echo $USER)}}"
@@ -775,12 +853,13 @@ install_apktool(){
   else
     echo "$ALIAS_LINE" >> "$ZSHRC" && echo "alias added to $ZSHRC"
   fi
-  echo "install_apktool: done"
+  log_task_done "install_apktool"
 }
 
 
 install_rms(){
-  echo "install_rms: start"
+  # Install rms-runtime-mobile-security globally via npm.
+  log_task_start "install_rms"
   # ensure npm exists (try to install via apt if missing)
   if ! command -v npm >/dev/null 2>&1; then
     if sudo apt-get update -y && sudo apt-get install -y nodejs npm; then
@@ -793,12 +872,13 @@ install_rms(){
 
   echo "Installing rms-runtime-mobile-security"
   sudo npm install -g rms-runtime-mobile-security || { echo "npm install failed"; return 1; }
-  echo "install_rms: done - run by typing 'rms'"
+  log_task_done "install_rms"
 }
 
 
 install_jadx(){
-  echo "install_jadx: start"
+  # Fetch the latest JADX release and add it to PATH.
+  log_task_start "install_jadx"
   TARGET_USER="${TARGET_USER:-$(logname 2>/dev/null || echo $USER)}"
   USERHOME="$(eval echo ~${TARGET_USER})"
   DEST="$USERHOME/tools/mobile/jadx"
@@ -835,12 +915,13 @@ install_jadx(){
     echo "$PATH_LINE" >> "$ZSHRC" && echo "added PATH to $ZSHRC"
   fi
 
-  echo "install_jadx: done - binaries (if any) in $DEST/bin"
+  log_task_done "install_jadx"
 }
 
 
 # Palera1n for jailbreaking iOS 
 install_palera1n(){
+  # Install palera1n jailbreak tooling.
   log_info "install_palera1n:start"
   if command -v palera1n >/dev/null 2>&1; then log_info "install_palera1n:already"; return; fi
   sudo apt-get update -y
@@ -852,6 +933,7 @@ install_palera1n(){
 
 # Frida iOS Dump
 install_frida_ios_dump(){
+  # Clone frida-ios-dump and prep python/npm deps.
   log_info "install_frida_ios_dump:start"
   # determine target user/home
   if [ -z "${TARGET_USER}" ]; then
@@ -895,6 +977,7 @@ install_frida_ios_dump(){
 
 # Install objection
 install_objection_editable(){
+  # Install objection in editable mode with its agent build.
   log_info "install_objection_editable:start"
   if [ -z "${TARGET_USER}" ]; then
     if [ -n "${SUDO_USER}" ]; then TARGET_USER="${SUDO_USER}"; else TARGET_USER="$(whoami)"; fi
@@ -940,6 +1023,7 @@ install_objection_editable(){
 
 # for iOS logs
 install_libimobiledevice_utils(){
+  # Install iOS device utilities for log capture.
   log_info "install_libimobiledevice_utils:start"
   export DEBIAN_FRONTEND=noninteractive
   sudo apt-get update -y
@@ -950,6 +1034,7 @@ install_libimobiledevice_utils(){
 
 # Grapefruit iOS
 install_grapefruit(){
+  # Install Grapefruit (igf) via npm.
   log_info "install_grapefruit:start"
   export DEBIAN_FRONTEND=noninteractive
   command -v npm >/dev/null 2>&1 || { sudo apt-get update -y; sudo apt-get install -y npm nodejs || log_warn "node/npm missing"; }
@@ -968,6 +1053,7 @@ install_grapefruit(){
 # Wifi Tools
 
 install_kali_tools_wireless(){
+  # Install Kali's wireless tools meta package.
   log_info "install_kali_tools_wireless:start"
   export DEBIAN_FRONTEND=noninteractive
   sudo apt-get update -y
@@ -977,6 +1063,7 @@ install_kali_tools_wireless(){
 
 
 install_eaphammer(){
+  # Install eaphammer from apt.
   log_info "install_eaphammer:start"
   export DEBIAN_FRONTEND=noninteractive
   sudo apt-get update -y
@@ -986,6 +1073,7 @@ install_eaphammer(){
 
 
 install_dhclient_wifi(){
+  # Ensure dhclient is present for wifi tooling.
   log_info "install_dhclient_wifi:start"
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -y >/dev/null 2>&1 || log_warn "apt update failed"
@@ -998,6 +1086,7 @@ install_dhclient_wifi(){
 
 
 download_pcapfilter_sh(){
+  # Fetch the pcapFilter.sh helper into the wifi tools dir.
   log_info "download_pcapfilter_sh:start"
 
   # must come from the script's env
@@ -1074,17 +1163,17 @@ main(){
   echo "Executing core setup and utilities ..."
 
   # Upgrades
-  setup_noninteractive_apt
-  apt_update_upgrade
-  install_packages
-  early_install_vmtools
-  install_python_tools
+  configure_noninteractive_apt
+  update_and_upgrade_apt
+  install_core_packages
+  early_install_vm_tools
+  ensure_python_tools
 
   # Fixes
   fix_sudoers_ownership
   configure_passwordless_sudo
-  ensure_ssh_key_exists
-  install_ubuntu_mono_and_set_xfce_font
+  ensure_ssh_key
+  install_ubuntu_mono_fontset
   install_xfce_power_manager_xml
   disable_xfce_compositing_fast
   spread_xfce_panel
