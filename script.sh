@@ -817,6 +817,57 @@ install_adb_platform_tools(){
 
 
 
+install_scrcpy(){
+  # Download the latest scrcpy release and expose it on PATH.
+  log_task_start "install_scrcpy"
+  refresh_target_context
+
+  local API_URL="https://api.github.com/repos/Genymobile/scrcpy/releases/latest"
+  local DL_URL=""
+  local TOOLS_DIR="${USER_HOME}/tools/mobile/scrcpy"
+
+  if command -v curl >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+    DL_URL="$(curl -fsSL "${API_URL}" | jq -r '.assets[] | select(.name|test("scrcpy-linux-x86_64-v.*\\.tar\\.gz$")) | .browser_download_url' | head -n1)"
+  fi
+  if [ -z "${DL_URL}" ]; then
+    log_warn "could not determine latest scrcpy release URL"
+    return 1
+  fi
+
+  local TMP="/tmp/$(basename "${DL_URL}")"
+  if ! download_file "${DL_URL}" "${TMP}"; then
+    log_warn "scrcpy download failed"
+    return 1
+  fi
+
+  mkdir -p "${TOOLS_DIR}" || { log_warn "mkdir failed: ${TOOLS_DIR}"; rm -f "${TMP}" >/dev/null 2>&1 || true; return 1; }
+
+  local TOP_DIR
+  TOP_DIR="$( (tar -tzf "${TMP}" 2>/dev/null || true) | head -n1 | cut -d/ -f1)"
+  [ -n "${TOP_DIR}" ] || TOP_DIR="scrcpy"
+
+  rm -rf "${TOOLS_DIR}/${TOP_DIR}" 2>/dev/null || true
+  if ! tar -xzf "${TMP}" -C "${TOOLS_DIR}"; then
+    log_warn "scrcpy extract failed"
+    rm -f "${TMP}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  rm -f "${TMP}" >/dev/null 2>&1 || true
+
+  chown -R "${TARGET_USER}:${TARGET_USER}" "${TOOLS_DIR}" 2>/dev/null || true
+
+  local ZSHRC="${USER_HOME}/.zshrc"
+  local PATH_LINE="export PATH=\"\$HOME/tools/mobile/scrcpy/${TOP_DIR}:\$PATH\""
+  if [ "$(id -u)" -eq 0 ]; then
+    sudo -u "${TARGET_USER}" bash -lc "touch '${ZSHRC}' && sed -i '/tools\\/mobile\\/scrcpy/d' '${ZSHRC}' && (grep -Fxq '${PATH_LINE}' '${ZSHRC}' || printf '%s\n' '${PATH_LINE}' >> '${ZSHRC}')" || log_warn "zshrc path update failed"
+  else
+    bash -lc "touch '${ZSHRC}' && sed -i '/tools\\/mobile\\/scrcpy/d' '${ZSHRC}' && (grep -Fxq '${PATH_LINE}' '${ZSHRC}' || printf '%s\n' '${PATH_LINE}' >> '${ZSHRC}')" || log_warn "zshrc path update failed"
+  fi
+
+  log_task_done "install_scrcpy"
+}
+
+
 install_apktool(){
   # Pull the latest apktool release and add a zsh alias.
   log_task_start "install_apktool"
@@ -1225,6 +1276,7 @@ main(){
 
     # Android
     install_adb_platform_tools
+    install_scrcpy
     install_apktool
     install_jadx
 
