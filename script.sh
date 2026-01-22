@@ -1102,6 +1102,69 @@ install_grapefruit(){
 
 
 # Wifi Tools
+install_hcxtools(){
+  # Build and install hcxtools from source.
+  log_task_start "install_hcxtools"
+  refresh_target_context
+  export DEBIAN_FRONTEND=noninteractive
+
+  apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update failed"
+  apt-get install -y git make build-essential libcurl4-openssl-dev libssl-dev zlib1g-dev pkg-config >/dev/null 2>&1 || log_warn "hcxtools deps install failed"
+
+  local DEST="${USER_HOME}/tools/wifi/hcxtools"
+  local REPO="https://github.com/ZerBea/hcxtools"
+
+  run_as_target_user "set -e
+    mkdir -p \"${DEST%/*}\"
+    if [ -d \"${DEST}/.git\" ]; then
+      git -C \"${DEST}\" pull --ff-only
+    else
+      rm -rf \"${DEST}\"
+      git clone \"${REPO}\" \"${DEST}\"
+    fi
+    cd \"${DEST}\"
+    make clean >/dev/null 2>&1 || true
+    make -j\$(nproc || echo 2)
+  " || { log_warn "hcxtools build failed"; return 1; }
+
+  if ! (cd "${DEST}" && make install >/dev/null 2>&1); then
+    log_warn "hcxtools make install failed"
+  fi
+
+  chown -R "${TARGET_USER}:${TARGET_USER}" "${DEST}" 2>/dev/null || true
+  log_task_done "install_hcxtools"
+}
+
+install_wifi_db(){
+  # Clone and prepare wifi_db with its virtualenv.
+  log_task_start "install_wifi_db"
+  refresh_target_context
+  export DEBIAN_FRONTEND=noninteractive
+
+  apt-get update -y >/dev/null 2>&1 || log_warn "apt-get update failed"
+  apt-get install -y python3 python3-pip python3-venv pkg-config libcurl4-openssl-dev libssl-dev zlib1g-dev make gcc tshark >/dev/null 2>&1 || log_warn "wifi_db deps install failed"
+
+  local DEST="${USER_HOME}/tools/wifi/wifi_db"
+  local REPO="https://github.com/r4ulcl/wifi_db"
+
+  run_as_target_user "set -e
+    mkdir -p \"${DEST%/*}\"
+    if [ -d \"${DEST}/.git\" ]; then
+      git -C \"${DEST}\" pull --ff-only
+    else
+      rm -rf \"${DEST}\"
+      git clone \"${REPO}\" \"${DEST}\"
+    fi
+    cd \"${DEST}\"
+    python3 -m venv env
+    . env/bin/activate
+    pip3 install -r requirements.txt
+    deactivate
+  " || { log_warn "wifi_db setup failed"; return 1; }
+
+  chown -R "${TARGET_USER}:${TARGET_USER}" "${DEST}" 2>/dev/null || true
+  log_task_done "install_wifi_db"
+}
 
 install_kali_tools_wireless(){
   # Install Kali's wireless tools meta package.
@@ -1297,6 +1360,8 @@ main(){
     install_kali_tools_wireless
     install_eaphammer 
     install_dhclient_wifi
+    install_hcxtools
+    install_wifi_db
     download_pcapfilter_sh
 
   else

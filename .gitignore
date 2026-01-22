@@ -1,3 +1,4 @@
 *.txt
 /windows/ansible-venv
 /windows
+test.sh
