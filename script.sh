@@ -675,6 +675,37 @@ install_bat_v0_25_via_gdebi() {
   return 0
 }
 
+install_update_golang(){
+  # Install or update Go using udhos/update-golang helper.
+  log_task_start "install_update_golang"
+  refresh_target_context
+  local URL="https://raw.githubusercontent.com/udhos/update-golang/master/update-golang.sh"
+  local TMP="/tmp/update-golang.sh"
+
+  if ! download_file "${URL}" "${TMP}"; then
+    log_warn "update-golang download failed"
+    return 1
+  fi
+
+  chmod +x "${TMP}" 2>/dev/null || true
+  if ! bash "${TMP}"; then
+    log_warn "update-golang script failed"
+    rm -f "${TMP}" >/dev/null 2>&1 || true
+    return 1
+  fi
+  rm -f "${TMP}" >/dev/null 2>&1 || true
+
+  local ZSHRC="${USER_HOME}/.zshrc"
+  local PATH_LINE='export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"'
+  if [ "$(id -u)" -eq 0 ]; then
+    sudo -u "${TARGET_USER}" bash -lc "touch '${ZSHRC}' && (grep -Fxq '${PATH_LINE}' '${ZSHRC}' || printf '%s\n' '${PATH_LINE}' >> '${ZSHRC}')" || log_warn "zshrc path update failed"
+  else
+    bash -lc "touch '${ZSHRC}' && (grep -Fxq '${PATH_LINE}' '${ZSHRC}' || printf '%s\n' '${PATH_LINE}' >> '${ZSHRC}')" || log_warn "zshrc path update failed"
+  fi
+
+  log_task_done "install_update_golang"
+}
+
 gunzip_rockyou(){
   # Extract the bundled rockyou wordlist.
   SRC="/usr/share/wordlists/rockyou.txt.gz"
@@ -1302,6 +1333,7 @@ main(){
   install_fzf_for_user
   install_tmux_conf_and_plugins
   install_bat_v0_25_via_gdebi
+  install_update_golang
   gunzip_rockyou
 
   # tools (grouped - conditional)
