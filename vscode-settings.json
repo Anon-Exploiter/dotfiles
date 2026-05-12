@@ -1,0 +1,11 @@
+{
+    "editor.formatOnSave": true,
+    "editor.suggestSelection": "first",
+    "editor.fontFamily": "'Ubuntu Mono', monospace",
+    "editor.fontSize": 20,
+    "editor.wordWrap": "on",
+    "security.workspace.trust.untrustedFiles": "open",
+    "window.zoomLevel": 0.5,
+    "workbench.startupEditor": "none",
+    "explorer.confirmDelete": false
+}
